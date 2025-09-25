@@ -1,0 +1,27 @@
+# ultralytics>=8.3.0
+# opencv-python>=4.8.0
+# numpy>=1.24.0
+# PyYAML>=6.0.1
+# grpcio
+# grpcio-tools
+# protobuf
+numpy==1.26.4
+opencv-python-headless<5
+PyYAML==6.0.1
+grpcio==1.62.2
+grpcio-tools==1.62.2
+protobuf==4.25.3
+requests
+boto3
+boxmot
+# Needed for YoloDetector
+ultralytics==8.3.0
+
+fastapi
+uvicorn[standard]
+websockets>=12
+
+# Force CPU-only PyTorch stack
+torch==2.2.2+cpu
+torchvision==0.17.2+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu

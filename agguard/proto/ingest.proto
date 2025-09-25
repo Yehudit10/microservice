@@ -1,0 +1,50 @@
+syntax = "proto3";
+package agguard.ingest;
+
+// Basic detection box for optional echo/telemetry
+message BBox {
+  int32 x1 = 1;
+  int32 y1 = 2;
+  int32 x2 = 3;
+  int32 y2 = 4;
+  string cls = 5;
+  float conf = 6;
+  int32 track_id = 7; // -1 if not tracked
+}
+
+message ProcessImageRequest {
+  // Source location (REQUIRED): the image must already be in S3/MinIO
+  string s3_bucket = 10;
+  string s3_key    = 11;
+
+  // Metadata (used to keep per-camera state + DB persistence)
+  string camera_id = 2;         // required for tracking continuity
+  int64  ts_millis = 3;         // event time (ms since epoch)
+  int64  frame_idx = 4;         // monotonically increasing per camera, if known
+
+  // Optional toggles
+  bool return_detections = 20;  // echo detections in response
+}
+
+message ProcessImageResponse {
+  // Quick telemetry for the caller
+  string camera_id = 1;
+  int64  frame_idx = 2;
+  double change_score = 3;  // MotionGate score used for gating
+  int32  num_detections = 4;
+  int32  num_tracks     = 5;
+  double fps_estimate   = 6;
+
+  // Incident state (if IncidentAggregator opened/updated/closed an incident)
+  // These fields are best-effort signals; you still persist via DbRepository.
+  string opened_incident_id  = 20;  // empty if none
+  string updated_incident_id = 21;  // empty if none
+  string closed_incident_id  = 22;  // empty if none
+
+  // Optional detailed output (only if requested)
+  repeated BBox boxes = 30;
+}
+
+service ImageIngestor {
+  rpc ProcessImage (ProcessImageRequest) returns (ProcessImageResponse);
+}

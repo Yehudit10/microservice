@@ -1,0 +1,36 @@
+route:
+  receiver: "default"
+  group_by: ["alertname", "camera", "incident_id"]
+  group_wait: 5s
+  group_interval: 30s
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - alertname="agguard_incident_open"
+      receiver: "agguard-receivers"
+
+receivers:
+  - name: "default"
+    webhook_configs:
+      - url: "http://alerts-gateway:8090/am/webhook"   # fan-out to UI even for unknown alerts
+
+  - name: "agguard-receivers"
+    webhook_configs:
+      - url: "http://alerts-gateway:8090/am/webhook"
+        send_resolved: true
+    # slack_configs:
+    #   - api_url: "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+    #     channel: "#security-alerts"
+    #     send_resolved: true
+    #     text: >
+    #       *{{ .CommonLabels.camera }}* {{ .CommonLabels.anomaly }} ({{ .Status }})
+    #       HLS: {{ (index .CommonAnnotations "hls") }}
+    #       VOD: {{ (index .CommonAnnotations "vod") }}
+    # email_configs:
+    #   - to: "yehudit50402@gmail.com"
+    #     from: "yehudit50402@gmail.com"
+    #     smarthost: "smtp:587"
+    #     auth_username: "user"
+    #     auth_password: "pass"
+    #     require_tls: true
+    #     send_resolved: true

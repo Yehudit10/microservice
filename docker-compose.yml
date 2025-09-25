@@ -1,0 +1,71 @@
+
+# services:
+#   security:
+#     build:
+#       context: .
+#       dockerfile: Dockerfile
+#     image: security-microservice
+#     ports:
+#       - "50051:50051"
+#     # IMPORTANT: if you have a dev bind-mount like this, it can hide generated stubs:
+#     # volumes:
+#     #   - .:/app
+
+#   client:
+#     image: security-microservice
+#     depends_on: [security]
+#     working_dir: /app
+#     command: python tools/grpc_client.py
+#     volumes:
+#       - "D:\\output_frames:/data/frames:ro"   # Windows path -> inside container
+#     environment:
+#       # only needed if you want to pass creds via env (you hard-coded them already)
+#       AWS_ACCESS_KEY_ID: minioadmin
+#       AWS_SECRET_ACCESS_KEY: minioadmin123
+#       AWS_REGION: us-east-1
+services:
+  security:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: security-microservice
+    environment:
+      - PYTHONPATH=/app
+    ports:
+      - "50051:50051"
+    # ⚠ DO NOT dev-mount .:/app here while you debug imports.
+    # volumes:
+    #   - .:/app
+
+  client:
+    image: security-microservice
+    depends_on: [security]
+    working_dir: /app
+    environment:
+      - PYTHONPATH=/app
+    volumes:
+      - "C:/output_frames:/data/frames:ro"   # use C: instead of D: until WSL sees D:
+    command: python tools/grpc_client.py
+  
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    volumes:
+      - ./configs/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--log.level=info"]
+    ports: ["9093:9093"]
+
+  alerts-gateway:
+    build: .
+    command: uvicorn agguard.app.alerts_gateway:app --host 0.0.0.0 --port 8090
+    ports: ["8090:8090"]
+
+  media-proxy:
+    build: .
+    command: uvicorn agguard.app.media_proxy:app --host 0.0.0.0 --port 8080
+    environment:
+      - MEDIA_AUTH_TOKEN=CHANGE_ME
+    #${MEDIA_AUTH_TOKEN}
+    ports: ["8088:8080"]
+
+
