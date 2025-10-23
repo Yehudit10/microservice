@@ -96,5 +96,12 @@ class S3Client:
         if range_header:
             params["Range"] = range_header
         return self.s3.get_object(**params)
+    
+    # in agguard/adapters/s3_client.py
+    def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str = "application/octet-stream"):
+        import io
+        bio = io.BytesIO(data)
+        self.client.upload_fileobj(bio, bucket, key, ExtraArgs={"ContentType": content_type})
+
 
 

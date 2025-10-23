@@ -30,20 +30,19 @@ class AlertmanagerClient:
         camera_id: str,
         incident_id: str,
         anomaly: str,
-        severity: str,
+        severity: int,
         hls_url: str,
         vod_url: Optional[str] = None,
         extra_labels: Optional[Dict[str, str]] = None,
         extra_annotations: Optional[Dict[str, str]] = None,
     ) -> None:
-        print("client in")
         now = int(time.time())
         labels = {
             "alertname": "agguard_incident_open",
             "camera": camera_id,
             "incident_id": incident_id,
             "anomaly": anomaly,
-            "severity": severity,       # e.g. info|warning|critical
+            "severity": str(severity),       
             **(extra_labels or {}),
         }
         annotations = {
@@ -57,14 +56,26 @@ class AlertmanagerClient:
             "annotations": annotations,
             "startsAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         }])
+    
 
-    def incident_close(self, camera_id: str, incident_id: str) -> None:
-        # Alertmanager resolves by sending the same labels and a "endsAt"
+    def incident_close(
+    self,
+    camera_id: str,
+    incident_id: str,
+    *,
+    anomaly: str,
+    severity: int,
+    extra_labels: Optional[Dict[str, str]] = None,
+) -> None:
+        print(severity)
         now = int(time.time())
         labels = {
             "alertname": "agguard_incident_open",
             "camera": camera_id,
             "incident_id": incident_id,
+            "anomaly": anomaly,          # ← include same labels as OPEN
+            "severity": str(severity),        # ← include same labels as OPEN
+            **(extra_labels or {}),
         }
         self.send([{
             "labels": labels,
@@ -72,3 +83,19 @@ class AlertmanagerClient:
             "startsAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 1)),
             "endsAt":   time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         }])
+
+
+    # def incident_close(self, camera_id: str, incident_id: str) -> None:
+    #     # Alertmanager resolves by sending the same labels and a "endsAt"
+    #     now = int(time.time())
+    #     labels = {
+    #         "alertname": "agguard_incident_open",
+    #         "camera": camera_id,
+    #         "incident_id": incident_id,
+    #     }
+    #     self.send([{
+    #         "labels": labels,
+    #         "annotations": {"summary": "Incident resolved"},
+    #         "startsAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 1)),
+    #         "endsAt":   time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+    #     }])

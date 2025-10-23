@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package agguard.proto;
+
+message ImageRequest {
+  string image_path = 1;    // path in mounted volume, e.g., /data/frames/dev_a/frame_00116.jpg
+  bytes image_bytes = 2;    // optional inline bytes
+}
+
+message Detection {
+  string cls = 1;
+  float conf = 2;
+  float x1 = 3;
+  float y1 = 4;
+  float x2 = 5;
+  float y2 = 6;
+}
+
+message DetectionResponse {
+  repeated Detection detections = 1;
+  double inference_time = 2;
+}
+
+service MegaDetector {
+  rpc Detect (ImageRequest) returns (DetectionResponse);
+}

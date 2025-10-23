@@ -4,7 +4,7 @@
 #"C:/Users/yehud/Downloads/cars.mp4"
 fit: "1280x720"          # or null to keep native
 roi: "0,0;1,0;1,1;0,1"   # normalized polygon; or "full"
-change_thresh: 0.25
+change_thresh: 0
 min_blob_area: 200
 morph_open: 3
 show_mask: false
@@ -21,41 +21,101 @@ alertmanager:
 video:
   bucket: imagery
   prefix: security/incidents
-  fps: 3
-  hls_segment_time: 1.0
-  hls_list_size: 400
-  hls_use_cmaf: false
+  fps: 9
+  hls_segment_time: 0.5
+  hls_list_size: 4000
+  hls_use_cmaf: False
   draw_thickness: 3
 
 logging:
   level: "INFO"          # DEBUG|INFO|WARNING|ERROR
   file: null             # e.g., "agguard.log"
 
+# detector:
+#   weights: "yolov8n.pt"
+#   conf: 0.6
+#   imgsz: 640
+#   device: "cpu"             # or "cpu"
+#   roi_pad: 16
 detector:
-  weights: "yolov8n.pt"
-  conf: 0.6
+  backend: "onnx"
+  onnx: "weights/yolov8n.onnx"    # we copied it here at build-time
+  conf: 0.4
   imgsz: 640
-  device: "cpu"             # or "cpu"
   roi_pad: 16
+  names:          # <- add at least the classes you route
+    2: person
+    # 2: car
+    # 7: truck
+    # 14: bird
+    # 15: cat
+    # 16: dog
+    # 17: horse
+    # 18: sheep
+    # 21: bear
+    
+  # optional speed knobs:
+  # roi_long_cap: 640
+  # iou: 0.45
+  # max_det: 100
+
+
 
 tracker:
   iou_thresh: 0.2
   max_miss: 20
   ema: 0.8
   min_hits: 5
-  high_conf: 0.7
+  high_conf: 0.6
   appearance_alpha: 0.8
   center_blend: 0.15
 
+# specialists:
+#   - for_class: "person"
+#     dotted_path: "agguard.specialists.mask_classifier.FaceMaskClassifier"
+#     kwargs:
+#       model_path: "/app/weights/best.pt"
+#       imgsz: 320
+#       conf_thresh: 0.25
+#       iou_thresh: 0.45
+#       device: "cpu"
 specialists:
+  # - for_class: "person"
+  #   grpc:
+  #     address: "mask-classifier:50061"
+  #     kind: "mask"
+  #     timeout_sec: 1.5
   - for_class: "person"
-    dotted_path: "agguard.specialists.mask_classifier.FaceMaskClassifier"
-    kwargs:
-      model_path: "/app/weights/best.pt"
-      imgsz: 320
-      conf_thresh: 0.25
-      iou_thresh: 0.45
-      device: "cpu"
+    grpc:
+      address: "anomalies-classifier:50062"
+      kind: "mask"
+      timeout_sec: 5
+
+  # - for_class: "bear"
+  #   grpc:
+  #     kind: "clip"
+  #     address: "anomalies-classifier:50062"
+  #     timeout_sec: 5
+
+  # - for_class: "bird"
+  #   grpc:
+  #     kind: "clip"
+  #     address: "anomalies-classifier:50062"
+  #     timeout_sec: 5
+  # - for_class: "cat"
+  #   grpc:
+  #     kind: "clip"
+  #     address: "anomalies-classifier:50062"
+  #     timeout_sec: 5
+    # dotted_path: "agguard.specialists.mask_classifier.FaceMaskClassifier"
+    # kwargs:
+    #   model_path: "/app/weights/mask_yolov8.onnx"
+    #   backend: "onnx"
+    #   imgsz: 224
+    #   class_names: ["no_mask", "mask"]   # required for ONNX
+    #   device: "cpu"                      # ignored by onnxruntime CPU
+
+
   
 kafka:
   # everything here is passed directly to confluent_kafka.Consumer(...)
@@ -98,7 +158,16 @@ s3:
   connect_timeout: 3.0
   read_timeout: 10.0
   max_attempts: 3
+# api:
+#   # base_url: "http://localhost:8080/api"
+#   base_url: "http://host.docker.internal:8080/api"
+#   token: "dev-token"
+
 api:
-  # base_url: "http://localhost:8080/api"
-  base_url: "http://host.docker.internal:8080/api"
-  token: "dev-token"
+  base_url: "http://host.docker.internal:8001/api"
+  default_mission_id: 123
+  # One of the following two:
+  service_token: c63577e2-5f20-443c-b264-bdc101d3d186   # ← recommended in prod
+  # dev_bootstrap: true                      # ← only if server ENV=dev
+  # dev_service_name: "ingestor"
+  timeout_sec: 15

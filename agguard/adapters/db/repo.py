@@ -1,7 +1,7 @@
 # agguard/persistence/db_repo.py
 from __future__ import annotations
-
 from typing import Optional, Dict, Any, List
+import os
 import requests
 
 from .port import PersistencePort, IncidentOpenData
@@ -9,34 +9,65 @@ from .port import PersistencePort, IncidentOpenData
 JSON = Dict[str, Any]
 
 
+class _ServiceAuth:
+    """
+    Service-to-service auth using X-Service-Token only.
+    Optionally bootstraps a service token in DEV via POST /auth/_dev_bootstrap.
+    """
+
+    def __init__(
+        self,
+        api_base: str,
+        session: requests.Session,
+        service_token: Optional[str] = None,
+        dev_bootstrap: bool = False,
+        dev_service_name: Optional[str] = None,
+        timeout_sec: int = 10,
+    ):
+        self.api = api_base.rstrip("/")
+        self.http = session
+        self.timeout = timeout_sec
+
+        token = service_token
+        if (token is None) and dev_bootstrap:
+            body = {
+                "service_name": (dev_service_name or os.getenv("DEV_SA_NAME") or "db-api"),
+                "rotate_if_exists": False,
+            }
+            r = self.http.post(f"{self.api}/auth/_dev_bootstrap", json=body, timeout=self.timeout)
+            r.raise_for_status()
+            data = r.json() or {}
+            token = data.get("service_account", {}).get("raw_token") or None
+            if not token:
+                raise RuntimeError(
+                    "Dev bootstrap returned no raw_token (service may already exist). "
+                    "Provide SERVICE_TOKEN explicitly."
+                )
+
+        if not token:
+            raise RuntimeError(
+                "Service token required. Pass service_token=... or enable dev_bootstrap=True (DEV only)."
+            )
+
+        # Pin header for every request on this session
+        self.http.headers.update({"X-Service-Token": token})
+
+    def request(self, method: str, url: str, **kwargs) -> requests.Response:
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = self.timeout
+        return self.http.request(method, url, **kwargs)
+
+
 class DbRepository(PersistencePort):
     """
-    Persistence adapter for your FastAPI backend.
+    Persistence adapter that talks to your FastAPI DB API using *only* service auth.
 
-    Expected server routes:
-
+    Expected API:
       PUT   /incidents
-            body: {
-              incident_id, device_id, mission_id, anomaly_type_id?,
-              started_at, frame_start, track_id?, roi_pixels?, meta?
-            }
-
       PATCH /incidents/{incident_id}
-            body: {
-              ended_at?, duration_sec?, frame_end?, poster_file_id?, severity?, meta?
-            }
-
       POST  /incidents/{incident_id}/frames
-            body: {
-              frame_idx, ts, detections: [
-                {"x1":int,"y1":int,"x2":int,"y2":int,"conf":float|null,"track_id":int|null},
-                ...
-              ],
-              conf?, cls_name?, cls_id?, file_id?, meta?
-            }
-
       POST  /files
-      GET   /files/{bucket}/{object_key}
+      GET   /files/{bucket}/{object_key}   -> 404 when not found
     """
 
     def __init__(
@@ -45,16 +76,64 @@ class DbRepository(PersistencePort):
         session: requests.Session,
         device_id: str,
         mission_id: Optional[int],
-        token: Optional[str] = None,
+        *,
+        # auth (service only)
+        service_token: Optional[str] = None,
+        dev_bootstrap: bool = False,
+        dev_service_name: Optional[str] = None,
+        # http defaults
+        timeout_sec: int = 15,
     ):
-        self.api = api_base #.rstrip("/")
+        self.api = api_base.rstrip("/")
         self.http = session
         self.device_id = device_id
         self.mission_id = mission_id
-        if token:
-            self.http.headers.update({"Authorization": f"Bearer {token}"})
+        self.timeout = timeout_sec
 
-    # ---------- files helpers ----------
+        self._auth = _ServiceAuth(
+            api_base=self.api,
+            session=self.http,
+            service_token=service_token,
+            dev_bootstrap=dev_bootstrap,
+            dev_service_name=dev_service_name,
+            timeout_sec=min(timeout_sec, 10),
+        )
+
+    # ---------------- internal HTTP helpers ----------------
+
+    def _request(self, method: str, path: str, **kwargs) -> requests.Response:
+        url = f"{self.api}{path}" if not path.startswith("http") else path
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = self.timeout
+        r = self._auth.request(method, url, **kwargs)
+        if not r.ok:
+            print("\n\n[DB ERROR]", r.status_code, url)
+            print(r.text)   # 👈 ADD THIS LINE
+        r.raise_for_status()
+        return r
+
+    def _post(self, path: str, json: Optional[JSON] = None) -> requests.Response:
+        return self._request("POST", path, json=json)
+
+    def _put(self, path: str, json: Optional[JSON] = None) -> requests.Response:
+        return self._request("PUT", path, json=json)
+
+    def _patch(self, path: str, json: Optional[JSON] = None) -> requests.Response:
+        return self._request("PATCH", path, json=json)
+
+    def _get_maybe_404(self, path: str) -> requests.Response:
+        """
+        GET that allows 404 (used for /files lookup). Does not raise on 404.
+        Raises on other 4xx/5xx.
+        """
+        url = f"{self.api}{path}" if not path.startswith("http") else path
+        r = self._auth.request("GET", url, timeout=self.timeout)
+        if r.status_code == 404:
+            return r
+        r.raise_for_status()
+        return r
+
+    # ---------------- files helpers ----------------
 
     def _files_upsert_minimal(
         self, bucket: str, key: str, metadata: Optional[JSON] = None
@@ -68,25 +147,24 @@ class DbRepository(PersistencePort):
             "content_type": None,
             "size_bytes": None,
             "etag": None,
-            "mission_id": self.mission_id,
             "device_id": self.device_id,
             "metadata": metadata or {},
         }
-        r = self.http.post(f"{self.api}/files", json=payload, timeout=10)
-        r.raise_for_status()
+
+        if self.mission_id is not None:
+            payload["mission_id"] = self.mission_id
+        self._post("/files", json=payload)
 
     def _files_get_id(self, bucket: str, key: str) -> Optional[int]:
-        r = self.http.get(f"{self.api}/files/{bucket}/{key}", timeout=10)
-        if r.status_code == 404:
+        r = self._get_maybe_404(f"/files/{bucket}/{key}")
+        if r.status_code in (404, 204):
             return None
-        r.raise_for_status()
-        # expected JSON: {"file_id": <int>, ...}
         try:
-            return int(r.json().get("file_id"))
+            return int((r.json() or {}).get("file_id"))
         except Exception:
             return None
 
-    # ---------- PersistencePort implementation ----------
+    # ---------------- PersistencePort implementation ----------------
 
     def open_incident(self, data: IncidentOpenData) -> None:
         """
@@ -96,14 +174,18 @@ class DbRepository(PersistencePort):
             "incident_id": data.incident_id,
             "device_id": (data.camera_id or self.device_id),
             "mission_id": self.mission_id,
-            "anomaly_type_id": None,  # keep if you map "kind" -> anomaly type elsewhere
+            "anomaly": data.kind,  # ✅ matches DB column (text)
             "started_at": data.ts_iso,
             "frame_start": data.frame_start,
             "roi_pixels": ({"roi": data.roi} if data.roi else None),
             "meta": {"kind": data.kind} if data.kind else {},
         }
-        r = self.http.put(f"{self.api}/incidents", json=payload, timeout=15)
-        r.raise_for_status()
+
+        # ✅ Include severity if provided
+        if data.severity is not None:
+            payload["severity"] = float(data.severity)
+
+        self._put("/incidents", json=payload)
 
     def add_frame_ref(
         self,
@@ -118,7 +200,6 @@ class DbRepository(PersistencePort):
     ) -> Optional[int]:
         """
         Add a per-frame record carrying ALL detections (bbox + conf + track_id) in one row.
-
         Returns the file_id of the source frame (if resolvable), or None.
         """
         # Ensure /files row for the ORIGINAL frame
@@ -131,40 +212,34 @@ class DbRepository(PersistencePort):
             },
         )
         file_id = self._files_get_id(bucket, key)
-        print(file_id)
-        # Normalize detection objects to the expected JSON schema
+
+        # Normalize detection objects
         norm_dets: List[JSON] = []
         for d in detections or []:
             try:
-                x1 = int(d.get("x1", 0))
-                y1 = int(d.get("y1", 0))
-                x2 = int(d.get("x2", 0))
-                y2 = int(d.get("y2", 0))
+                x1 = int(d.get("x1", 0)); y1 = int(d.get("y1", 0))
+                x2 = int(d.get("x2", 0)); y2 = int(d.get("y2", 0))
                 c_raw = d.get("conf", None)
                 c_val = float(c_raw) if c_raw is not None else None
                 tid_raw = d.get("track_id", None)
                 tid_val = int(tid_raw) if tid_raw is not None else None
                 norm_dets.append(
-                    {"track_id": tid_val,"x1": x1, "y1": y1, "x2": x2, "y2": y2, "conf": c_val, }
+                    {"track_id": tid_val, "x1": x1, "y1": y1, "x2": x2, "y2": y2, "conf": c_val}
                 )
             except Exception:
-                # skip malformed entries, but continue persisting valid ones
                 continue
 
         frames_payload: JSON = {
             "frame_idx": frame_idx,
             "ts": ts_iso,
-            "detections": norm_dets,  # <-- all detections in this frame
+            "detections": norm_dets,
             "cls_name": cls_name,
             "cls_id": cls_id,
             "file_id": int(file_id) if file_id is not None else 0,
             "meta": {},
         }
 
-        r = self.http.post(
-            f"{self.api}/incidents/{incident_id}/frames", json=frames_payload, timeout=15
-        )
-        r.raise_for_status()
+        self._post(f"/incidents/{incident_id}/frames", json=frames_payload)
         return file_id
 
     def close_incident(
@@ -175,9 +250,11 @@ class DbRepository(PersistencePort):
         frame_end: int,
         poster_file_id: Optional[int],
         severity: Optional[float] = None,
+        is_real: Optional[bool] = None,
+        ack: Optional[bool] = None,
     ) -> None:
         """
-        Close/update an incident. Optionally include severity (mean tracks/frame).
+        Close/update an incident. Optionally include severity, is_real, ack.
         """
         patch: JSON = {
             "ended_at": ended_at_iso,
@@ -186,8 +263,10 @@ class DbRepository(PersistencePort):
             "poster_file_id": (int(poster_file_id) if poster_file_id is not None else None),
         }
         if severity is not None:
-            # If your API doesn't yet accept 'severity' directly, move it under 'meta'
             patch["severity"] = float(severity)
+        if is_real is not None:
+            patch["is_real"] = bool(is_real)
+        if ack is not None:
+            patch["ack"] = bool(ack)
 
-        r = self.http.patch(f"{self.api}/incidents/{incident_id}", json=patch, timeout=15)
-        r.raise_for_status()
+        self._patch(f"/incidents/{incident_id}", json=patch)

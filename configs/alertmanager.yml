@@ -1,9 +1,13 @@
+# alertmanager.yml
 route:
   receiver: "default"
   group_by: ["alertname", "camera", "incident_id"]
-  group_wait: 5s
-  group_interval: 30s
+
+  # ↓↓↓ Make notifications immediate
+  group_wait: 0s          # don’t wait to form a group
+  group_interval: 1s      # send subsequent updates nearly immediately
   repeat_interval: 4h
+
   routes:
     - matchers:
         - alertname="agguard_incident_open"
@@ -12,12 +16,13 @@ route:
 receivers:
   - name: "default"
     webhook_configs:
-      - url: "http://alerts-gateway:8090/am/webhook"   # fan-out to UI even for unknown alerts
+      - url: "http://alerts-gateway:8090/am/webhook"
 
   - name: "agguard-receivers"
     webhook_configs:
       - url: "http://alerts-gateway:8090/am/webhook"
-        send_resolved: true
+        send_resolved: true        # ← keep this ON
+
     # slack_configs:
     #   - api_url: "https://hooks.slack.com/services/XXX/YYY/ZZZ"
     #     channel: "#security-alerts"
@@ -29,8 +34,6 @@ receivers:
     # email_configs:
     #   - to: "yehudit50402@gmail.com"
     #     from: "yehudit50402@gmail.com"
-    #     smarthost: "smtp:587"
-    #     auth_username: "user"
-    #     auth_password: "pass"
-    #     require_tls: true
+    #     smarthost: "mailrelay:25"
+    #     require_tls: false
     #     send_resolved: true

@@ -1,0 +1,62 @@
+############################
+# Single-stage runtime image
+############################
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    OPENCV_OPENCL_RUNTIME=disabled
+
+# System libs (same as others)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libglib2.0-0 \
+      libgl1 \
+      libstdc++6 \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# -------- Python deps --------
+COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip && \
+    python -m pip install --no-cache-dir -r requirements.txt && \
+    python -m pip install --no-cache-dir megadetector
+
+# -------- App sources --------
+COPY . .
+
+# -------- gRPC stubs (proto -> agguard/proto) --------
+RUN mkdir -p agguard/proto && touch agguard/proto/__init__.py
+RUN python -m grpc_tools.protoc \
+      -I agguard/proto \
+      --python_out=agguard/proto \
+      --grpc_python_out=agguard/proto \
+      mega_detector.proto
+
+# Patch generated imports to relative (so imports work inside agguard package)
+RUN python - <<'PY'
+from pathlib import Path; import re
+p = Path("agguard/proto/mega_detector_pb2_grpc.py")
+if p.exists():
+    s = p.read_text(encoding="utf-8")
+    s2 = re.sub(r'^import (mega_detector_pb2)', r'from . import \1', s, flags=re.M)
+    if s2 != s:
+        p.write_text(s2, encoding="utf-8")
+        print("patched", p)
+PY
+
+# -------- Environment defaults --------
+ENV PORT=50063 \
+    MODEL_NAME=MDV5A \
+    DEVICE=cpu
+
+EXPOSE 50063
+
+# -------- Launch gRPC service --------
+CMD ["python", "-m", "agguard.specialists.megadetector_service.server"]

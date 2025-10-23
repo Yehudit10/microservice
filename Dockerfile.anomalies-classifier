@@ -1,0 +1,71 @@
+# Dockerfile.anomalies-classifier
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    OMP_NUM_THREADS=1
+
+WORKDIR /app
+
+# System libs (OpenCV runtime deps)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates libglib2.0-0 libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Python deps ---
+# 1) Pin NumPy to 1.x BEFORE torch/open_clip to avoid ABI mismatch
+# 2) Then base libs, then torch CPU wheels, then open_clip_torch
+# 3) FINAL GUARD: force-reinstall numpy==1.26.4 and fail build if not 1.26.x
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip && \
+    pip install --no-cache-dir "numpy==1.26.4" && \
+    pip install --no-cache-dir \
+      grpcio grpcio-tools "protobuf>=4.24" \
+      pillow \
+      opencv-python-headless && \
+    pip install --no-cache-dir \
+      torch==2.2.2+cpu torchvision==0.17.2+cpu --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir open_clip_torch && \
+    pip install --no-cache-dir --upgrade --force-reinstall "numpy==1.26.4" && \
+    python -c "import numpy as np, sys; print('NumPy(final)=', np.__version__); sys.exit(0 if np.__version__.startswith('1.26.') else 1)"
+
+# --- App code & proto sources ---
+COPY agguard/specialists/anomalies_service/server.py agguard/specialists/anomalies_service/server.py
+COPY agguard/proto agguard/proto
+
+# Ensure packages are importable
+RUN mkdir -p agguard && touch agguard/__init__.py && touch agguard/proto/__init__.py
+
+# Compile stubs using the EXISTING generic proto (shared Crop→Prediction schema)
+RUN python -m grpc_tools.protoc \
+      -I agguard/proto \
+      --python_out=agguard/proto \
+      --grpc_python_out=agguard/proto \
+      agguard/proto/mask_classifier.proto && \
+    python -c "from pathlib import Path; import re; p=Path('agguard/proto/mask_classifier_pb2_grpc.py'); s=p.read_text(); s2=re.sub(r'(?m)^import (\\w+_pb2)\\b', r'from . import \\1', s); p.write_text(s2)"
+
+# --- Service configuration (override in docker-compose if desired) ---
+# --- Service configuration (override in docker-compose if desired) ---
+ENV PORT=50062 \
+    DEVICE=cpu \
+    CLIP_MODEL=RN50 \
+    CLIP_PRETRAINED=openai \
+    CLIP_INPUT_SIZE=224 \
+    CLIP_BATCH=32 \
+    CLIP_AGGREGATE=meanmax \
+    CLIP_LABELS="normal activity,climbing a fence" \
+    CLIP_TEMPLATES="a CCTV frame of {},a surveillance video of {},a low-resolution photo of {},a person {},an action of {},a person is {}" \
+    CLIP_THRESHOLDS="normal activity:0.30,climbing a fence:0.50" \
+    ENABLE_MKLDNN=1 \
+    NUM_THREADS=6 \
+    CHANNELS_LAST=1 \
+    PREPROCESS_CLAHE=1 \
+    PREPROCESS_UNSHARP=1
+
+
+EXPOSE 50062
+
+# Entry point (matches the copied server file)
+CMD ["python", "-m", "agguard.specialists.anomalies_service.server"]

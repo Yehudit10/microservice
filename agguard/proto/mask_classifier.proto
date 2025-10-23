@@ -1,0 +1,38 @@
+syntax = "proto3";
+package agguard.classifiers;
+
+option go_package = "agguard/classifiers";
+option java_multiple_files = true;
+
+message Crop {
+  // JPEG-encoded RGB crop for one detected face/person-region.
+  bytes jpeg = 1;
+  // Original box on the full frame, for traceability.
+  int32 x1 = 2;
+  int32 y1 = 3;
+  int32 x2 = 4;
+  int32 y2 = 5;
+}
+
+message ClassifyRequest {
+  // For future classifiers (e.g., "mask", "helmet", "balaclava")
+  string model_name = 1;
+  repeated Crop crops = 2;
+}
+
+message Prediction {
+  int32 x1 = 1;
+  int32 y1 = 2;
+  int32 x2 = 3;
+  int32 y2 = 4;
+  string label = 5;      // lowercased label
+  float confidence = 6;  // 0..1
+}
+
+message ClassifyResponse {
+  repeated Prediction preds = 1;
+}
+
+service ClassifierService {
+  rpc Classify(ClassifyRequest) returns (ClassifyResponse);
+}

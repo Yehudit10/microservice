@@ -1,0 +1,112 @@
+
+
+############################
+# Stage 1: Export YOLO -> ONNX (detector) — once per build
+############################
+FROM python:3.12-slim AS exporter
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Only needed in the exporter
+RUN python -m pip install --upgrade pip && \
+    pip install --no-cache-dir \
+      ultralytics==8.3.0 \
+      torch==2.2.2+cpu \
+      torchvision==0.17.2+cpu \
+      onnx \
+      --extra-index-url https://download.pytorch.org/whl/cpu
+
+WORKDIR /w
+# Example: export a tiny detector (adjust to your detector weights if you have your own)
+RUN python - <<'PY'
+from ultralytics import YOLO
+m = YOLO("yolov8n.pt")  # auto-download
+out_path = m.export(format="onnx", opset=12, simplify=False, dynamic=False)
+print("Exported:", out_path)  # -> yolov8n.onnx
+PY
+# Result: /w/yolov8n.onnx
+
+
+############################
+# Stage 2: Runtime
+############################
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    OPENCV_OPENCL_RUNTIME=disabled
+
+# System libs for OpenCV & ffmpeg
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+      libglib2.0-0 \
+      libgl1 \
+      libstdc++6 \
+      ca-certificates \
+      ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# -------- Python deps --------
+# Your requirements.txt should NOT pull torch/ultralytics for runtime.
+# Ensure it has (at least): onnxruntime, opencv-python-headless, numpy, pyyaml, grpcio, grpcio-tools, protobuf, aiohttp, etc.
+COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip && \
+    python -m pip install --no-cache-dir -r requirements.txt
+
+# -------- App sources --------
+COPY . .
+
+# -------- Weights --------
+RUN mkdir -p /app/weights
+# Detector ONNX produced by exporter stage
+COPY --from=exporter /w/yolov8n.onnx /app/weights/yolov8n.onnx
+# Your mask-classifier ONNX (strict ONNX backend in FaceMaskClassifier)
+# Make sure this file exists in your repo at build time
+COPY weights/mask_yolov8.onnx /app/weights/mask_yolov8.onnx
+
+# Optional build-time sanity checks
+RUN test -f /app/weights/yolov8n.onnx     && echo "✅ detector ONNX present"
+RUN test -f /app/weights/mask_yolov8.onnx && echo "✅ mask ONNX present"
+
+# -------- gRPC stubs (proto -> agguard/proto_gen) --------
+# Your repo layout has: proto/ingest.proto (source), proto_gen/ as the generated package.
+# -------- gRPC stubs (proto -> agguard/proto) --------
+RUN mkdir -p agguard/proto && touch agguard/proto/__init__.py
+
+# Generate BOTH protos into the same package
+RUN python -m grpc_tools.protoc \
+      -I agguard/proto \
+      --python_out=agguard/proto \
+      --grpc_python_out=agguard/proto \
+      agguard/proto/ingest.proto \
+      agguard/proto/mask_classifier.proto
+
+# Patch generated imports to be package-relative (X_pb2_grpc -> .X_pb2)
+RUN python - <<'PY'
+from pathlib import Path
+import re
+for name in ("ingest_pb2_grpc.py","mask_classifier_pb2_grpc.py"):
+    p = Path("agguard/proto")/name
+    s = p.read_text(encoding="utf-8")
+    s2 = re.sub(r'(?m)^import (\w+_pb2)\b', r'from . import \1', s)
+    if s2 != s:
+        p.write_text(s2, encoding="utf-8")
+        print("patched", p)
+    else:
+        print("no patch needed", p)
+PY
+
+
+# -------- Runtime config --------
+ENV AGGUARD_CFG=/app/configs/default.yaml
+EXPOSE 50051
+CMD ["python", "-m", "agguard.app.grpc_server"]

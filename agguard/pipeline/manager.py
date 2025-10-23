@@ -12,8 +12,7 @@ from agguard.core.tracker import BoxMOTWrapper
 from agguard.specialists.dispatch import ClassDispatch
 from agguard.core.events.models import Rule
 from agguard.core.events.aggregator import IncidentAggregator
-
-# NEW: S3 client for HLS/MP4 upload
+from agguard.specialists.clients.megadetector import MegaDetectorClient
 from agguard.adapters.s3_client import S3Client, S3Config
 from agguard.adapters.alerting.alertmanager_client import AlertmanagerClient
 
@@ -32,7 +31,8 @@ class PipelineManager:
         self.repo = repo
         self.rules = rules
 
-        self.det = YoloDetector(cfg.get("detector", {}))
+        self.det = MegaDetectorClient(cfg.get("detector", {}))
+
         self.router = ClassDispatch(cfg.get("specialists", []))
         self.change_thresh = float(cfg.get("change_thresh", 0.02))
         self.motion_pad_px = int(cfg.get("motion_pad_px", 12))
@@ -42,19 +42,17 @@ class PipelineManager:
         video_cfg: Dict[str, Any] = cfg.get("video", {}) or {}
         s3_cfg_raw: Dict[str, Any] = cfg.get("s3", {}) or {}
 
-        # Video/HLS knobs (defaults match our recommmendations)
         self.video_bucket: Optional[str] = video_cfg.get("bucket") or None
         self.video_prefix: str = (video_cfg.get("prefix") or "security/incidents").strip("/")
-        self.video_fps: int = int(video_cfg.get("fps", 12))
-        self.hls_segment_time: float = float(video_cfg.get("hls_segment_time", 3.0))
-        self.hls_list_size: int = int(video_cfg.get("hls_list_size", 40))
+        self.video_fps: int = int(video_cfg.get("fps", 5))
+        self.hls_segment_time: float = float(video_cfg.get("hls_segment_time", 1.0))
+        self.hls_list_size: int = int(video_cfg.get("hls_list_size", 2400))
         self.hls_use_cmaf: bool = bool(video_cfg.get("hls_use_cmaf", False))
-        self.draw_thickness: int = int(video_cfg.get("draw_thickness", 3))
+        self.draw_thickness: int = int(video_cfg.get("draw_thickness", 2))
 
-        # S3 client (optional; if no bucket -> disable video outputs)
+        # S3 client (optional)
         self.s3: Optional[S3Client] = None
         if self.video_bucket:
-            # Build S3Config with safe defaults
             sc = S3Config(
                 region_name=s3_cfg_raw.get("region_name", "us-east-1"),
                 aws_access_key_id=s3_cfg_raw.get("aws_access_key_id"),
@@ -70,7 +68,6 @@ class PipelineManager:
                 log.info("S3 client initialized (endpoint=%s, region=%s, bucket=%s)",
                          sc.endpoint_url, sc.region_name, self.video_bucket)
             except Exception as e:
-                # Fail soft: run without HLS if S3 init fails
                 log.exception("Failed to init S3 client; disabling video outputs: %s", e)
                 self.s3 = None
                 self.video_bucket = None
@@ -95,7 +92,6 @@ class PipelineManager:
         )
         trk = BoxMOTWrapper()
 
-        # ---- Build the IncidentAggregator with optional HLS/MP4 outputs ----
         aggregator = IncidentAggregator(
             self.rules,
             camera_id=camera_id,
@@ -104,7 +100,7 @@ class PipelineManager:
             assoc_iou=0.3,
             sample_every=1,
 
-            # NEW (optional): live HLS + final MP4 on close
+            # Live HLS + MP4 on close
             s3=self.s3 if self.video_bucket else None,
             video_bucket=self.video_bucket,
             video_prefix=self.video_prefix,
@@ -114,7 +110,7 @@ class PipelineManager:
             hls_use_cmaf=self.hls_use_cmaf,
             draw_thickness=self.draw_thickness,
 
-            alert_client=self.am,                 # NEW
+            alert_client=self.am,
             media_base=f'{self.cfg["media_base"]}'.rstrip("/") if "media_base" in self.cfg else None,
             media_token=self.cfg.get("media_auth_token"),
         )
@@ -146,9 +142,7 @@ class PipelineManager:
         frame_idx = p["frame_counter"]
         t1 = time.perf_counter()
 
-        roi_poly, gate, trk, aggregator = (
-            p["roi_poly"], p["gate"], p["trk"], p["aggregator"]
-        )
+        roi_poly, gate, trk, aggregator = (p["roi_poly"], p["gate"], p["trk"], p["aggregator"])
 
         # --- Motion gate ---
         reading = gate.update(frame_bgr)
@@ -162,11 +156,12 @@ class PipelineManager:
 
         gate_dur = t_gate_end - t1
         mask_dur = t_mask_end - t_mask_start
-        t2 = t_mask_end  # detect starts after mask
+        t2 = t_mask_end
 
         # --- Detector / Tracker / Specialists ---
         if reading.score >= self.change_thresh:
             dets = self.det.detect(frame_bgr, curr_roi)
+            print(dets)
             t3 = time.perf_counter()
             tracks = trk.update([(d.cls, d.conf, d.bbox) for d in dets], frame_bgr)
             t4 = time.perf_counter()
@@ -178,17 +173,15 @@ class PipelineManager:
             outs = {}
             t3 = t4 = t5 = time.perf_counter()
 
-        # --- Aggregator (now also handles HLS live frames internally) ---
+        # --- Aggregator (handles HLS writes internally) ---
         agg_evt = aggregator.update(
             frame_idx=frame_idx, ts_sec=ts_sec,
             frame_bgr=frame_bgr, tracks=tracks, outputs=outs
         )
         t6 = time.perf_counter()
 
-        # Persist per-frame detections (unchanged)
-        aggregator.record_frame(
-            frame_idx=frame_idx, source_bucket=src_bucket, source_key=src_key
-        )
+        # Persist per-frame detections (only event-relevant ones are stored)
+        aggregator.record_frame(frame_idx=frame_idx, source_bucket=src_bucket, source_key=src_key)
         t7 = time.perf_counter()
 
         now = time.perf_counter()
@@ -204,16 +197,8 @@ class PipelineManager:
             (t5 - t4), (t6 - t5), (t7 - t6), (now - t0),
         )
 
-        boxes: List[Dict[str, Any]] = []
-        if return_boxes:
-            for t in tracks:
-                boxes.append({
-                    "x1": t.bbox[0], "y1": t.bbox[1],
-                    "x2": t.bbox[2], "y2": t.bbox[3],
-                    "cls": t.cls or "",
-                    "conf": float(t.conf or 0.0),
-                    "track_id": int(t.track_id if t.track_id is not None else -1),
-                })
+        # Only return event-matching boxes for UI/gRPC
+        boxes: List[Dict[str, Any]] = aggregator.visible_boxes() if return_boxes else []
 
         result = {
             "camera_id": camera_id, "frame_idx": frame_idx,

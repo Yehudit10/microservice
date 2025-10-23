@@ -1,0 +1,82 @@
+
+############################
+# Single-stage runtime (like your security Dockerfile's Stage 2)
+############################
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    OPENCV_OPENCL_RUNTIME=disabled
+
+# System libs for OpenCV
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libglib2.0-0 \
+      libgl1 \
+      libstdc++6 \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# -------- Python deps --------
+# Your requirements.txt should include: onnxruntime, opencv-python-headless, numpy,
+# grpcio, grpcio-tools, protobuf, etc. (same file as security uses)
+COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip && \
+    python -m pip install --no-cache-dir -r requirements.txt
+
+# -------- App sources --------
+COPY . .
+
+# -------- Weights (optional copy; you can also mount via compose) --------
+RUN mkdir -p /app/weights
+# If you keep your mask model here in the repo, copy it in (adjust filename as needed)
+# Otherwise, this line can stay and simply be ignored if the file doesn't exist at build time.
+# To fail build when missing, keep the COPY; to ignore, comment it out.
+# Example assumes you keep: weights/mask_yolov8.onnx
+COPY weights/mask_yolov8.onnx /app/weights/mask_yolov8.onnx
+# Optional build-time sanity check (won't fail if file absent; comment out '|| true' to enforce)
+RUN test -f /app/weights/mask_yolov8.onnx && echo "✅ mask ONNX present" || echo "ℹ️ mask ONNX will be mounted at runtime"
+
+# -------- gRPC stubs (proto -> agguard/proto) --------
+RUN mkdir -p agguard/proto && touch agguard/proto/__init__.py
+
+# Generate stubs INTO the same package (like your security image)
+RUN python -m grpc_tools.protoc \
+      -I agguard/proto \
+      --python_out=agguard/proto \
+      --grpc_python_out=agguard/proto \
+      mask_classifier.proto
+
+# Patch generated imports to be package-relative (X_pb2_grpc -> .X_pb2)
+RUN python - <<'PY'
+from pathlib import Path
+import re
+p = Path("agguard/proto/mask_classifier_pb2_grpc.py")
+s = p.read_text(encoding="utf-8")
+s2 = re.sub(r'(?m)^import (\w+_pb2)\b', r'from . import \1', s)
+if s2 != s:
+    p.write_text(s2, encoding="utf-8")
+    print("patched", p)
+else:
+    print("no patch needed", p)
+PY
+
+# -------- Service defaults --------
+# Match server.py env usage; you can override via docker-compose
+ENV PORT=50061 \
+    BACKEND=onnx \
+    MODEL_PATH=/app/weights/mask_yolov8.onnx \
+    CLASSES="no_mask,mask" \
+    IMGSZ=224 \
+    DEVICE=cpu
+
+EXPOSE 50061
+
+# Run the gRPC server (module path style, like your security CMD)
+CMD ["python", "-m", "agguard.specialists.mask_service.server"]

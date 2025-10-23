@@ -8,15 +8,16 @@ from concurrent import futures
 import numpy as np  # optional; keep if you like the np.ndarray type hint
 import grpc
 import requests
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 
 from agguard.logging_utils import setup_logging
 from agguard.pipeline.manager import PipelineManager
 from agguard.core.events.models import Rule
+# CHANGED: use the service-to-service repo you asked for
 from agguard.adapters.db.repo import DbRepository
 from agguard.adapters.s3_client import S3Client, S3Config
 # from agguard.proto_gen import ingest_pb2, ingest_pb2_grpc
-
-
 from agguard.proto import ingest_pb2, ingest_pb2_grpc
 
 log = logging.getLogger("agguard.grpc")
@@ -24,6 +25,22 @@ DEFAULT_CFG = Path(__file__).resolve().parents[2] / "configs" / "default.yaml"
 CFG_PATH = Path(os.getenv("AGGUARD_CFG", str(DEFAULT_CFG)))
 
 
+def _build_session(total_retries: int = 3, backoff_factor: float = 0.3) -> requests.Session:
+    s = requests.Session()
+    retry = Retry(
+        total=total_retries,
+        read=total_retries,
+        connect=total_retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=(502, 503, 504),
+        allowed_methods=frozenset(["GET", "POST", "PUT", "PATCH"]),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=50)
+    s.mount("http://", adapter)
+    s.mount("https://", adapter)
+    # sane default timeouts will still come from DbRepository._request
+    return s
 
 
 # -------------------------
@@ -36,14 +53,23 @@ class ImageIngestorServicer(ingest_pb2_grpc.ImageIngestorServicer):
         setup_logging(cfg.get("logging", {}).get("level", "INFO"),
                       cfg.get("logging", {}).get("file", None))
 
-        # DbRepository
+        # DbRepository (SERVICE-TO-SERVICE ONLY)
         api_cfg = cfg.get("api", {})
+        service_token = api_cfg.get("service_token") or os.getenv("DB_API_SERVICE_TOKEN")
+
+        # Optional: dev bootstrap (server must run with ENV=dev for /auth/_dev_bootstrap)
+        dev_bootstrap = bool(api_cfg.get("dev_bootstrap", False))
+        dev_service_name = api_cfg.get("dev_service_name", "ingestor")
+
         self.repo = DbRepository(
             api_base=api_cfg.get("base_url", "http://localhost:8080/api"),
-            session=requests.Session(),
-            device_id=cfg.get("camera_id", "dev-a"),
-            mission_id=api_cfg.get("default_mission_id"),
-            token=api_cfg.get("token"),
+            session=_build_session(),
+            device_id=cfg.get("camera_id", os.getenv("CAMERA_ID", "dev-a")),
+            mission_id=None,
+            service_token=service_token,          # ← use raw service token
+            dev_bootstrap=dev_bootstrap,          # ← optional in DEV only
+            dev_service_name=dev_service_name,    # ← optional
+            timeout_sec=int(api_cfg.get("timeout_sec", 15)),
         )
 
         # S3/MinIO client
@@ -61,15 +87,45 @@ class ImageIngestorServicer(ingest_pb2_grpc.ImageIngestorServicer):
         # Rules (same as your run.py example)
         rules = [
             Rule(
-                name="person.masked",
+                name="person.mask",
                 target_cls="person",
                 target_cls_id=0,
-                attr_value="balaclava",
-                min_conf=0.3,
+                attr_value="mask",
+                min_conf=0.5,
+                severity=4,
                 min_consec=2,
-                cooldown=12,
-            )
+                cooldown=9,
+            ),
+    #             Rule(  # shooting
+    #     name="person.shooting",
+    #     target_cls="person",
+    #     target_cls_id=0,
+    #     attr_value="shooting",
+    #     min_conf=1,     # tune
+    #     min_consec=2,
+    #     cooldown=20,
+    # ),
+    Rule(  # climbing a fence
+        name="climbing_fence",
+        target_cls="person",
+        target_cls_id=0,
+        attr_value="object climbing a fence",
+        severity=4,
+        min_conf=0.5,     # tune
+        min_consec=2,
+        cooldown=12,
+    ),
+    # Rule(  # robbery / stealing
+    #     name="person.robbery",
+    #     target_cls="person",
+    #     target_cls_id=0,
+    #     attr_value="stealing or robbery",
+    #     min_conf=1,     # tune
+    #     min_consec=2,
+    #     cooldown=20,
+    # )
         ]
+
         self.pm = PipelineManager(cfg, self.repo, rules)
 
     def _fetch_bgr_from_bucket_key(self, bucket: str, key: str) -> np.ndarray:
@@ -133,16 +189,8 @@ class ImageIngestorServicer(ingest_pb2_grpc.ImageIngestorServicer):
 # -------------------------
 # Entrypoint
 # -------------------------
-    
-# import os, threading
-# def _start_http_proxy():
-#     import uvicorn
-#     from agguard.app.media_proxy import app as http_app
-#     port = int(os.getenv("MEDIA_PORT", "8080"))
-#     uvicorn.run(http_app, host="0.0.0.0", port=port, log_level="info")
 
-def serve(host: str = "0.0.0.0", port: int = 50051, workers: int = 4):
-    # threading.Thread(target=_start_http_proxy, daemon=True).start()
+def serve(host: str = "0.0.0.0", port: int = 50052, workers: int = 4):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=workers))
     ingest_pb2_grpc.add_ImageIngestorServicer_to_server(ImageIngestorServicer(), server)
     server.add_insecure_port(f"{host}:{port}")

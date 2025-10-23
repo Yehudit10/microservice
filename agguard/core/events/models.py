@@ -9,7 +9,8 @@ class Rule:
     name: str
     target_cls: str                          # e.g. "person"
     target_cls_id: Optional[Union[str,int]] = None  # e.g. 0, "0"
-    attr_value: str = ""                     # e.g. "balaclava"
+    attr_value: str = ""  # e.g. "balaclava"
+    severity:  int = 3                
     min_conf: float = 0.6
     min_consec: int = 5
     cooldown: int = 12
@@ -24,6 +25,7 @@ class Incident:
     duration_sec: float = 0.0
     frame_start: int = 0
     frame_end: int = 0
+    severity:  int = 1
     track_id: Optional[int] = None
     roi: Optional[List[Tuple[int,int]]] = None
     boxes: List[Box] = field(default_factory=list)
