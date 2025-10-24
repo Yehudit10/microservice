@@ -105,10 +105,20 @@ class ImageIngestorServicer(ingest_pb2_grpc.ImageIngestorServicer):
     #     min_consec=2,
     #     cooldown=20,
     # ),
+    # Rule(  # climbing a fence
+    #     name="climbing_fence",
+    #     target_cls="person",
+    #     target_cls_id=0,
+    #     attr_value="object climbing a fence",
+    #     severity=4,
+    #     min_conf=0.5,     # tune
+    #     min_consec=2,
+    #     cooldown=12,
+    # ),
     Rule(  # climbing a fence
         name="climbing_fence",
-        target_cls="person",
-        target_cls_id=0,
+        target_cls="animal",
+        target_cls_id=1,
         attr_value="object climbing a fence",
         severity=4,
         min_conf=0.5,     # tune

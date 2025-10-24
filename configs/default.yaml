@@ -43,7 +43,8 @@ detector:
   conf: 0.4
   imgsz: 640
   roi_pad: 16
-  names:          # <- add at least the classes you route
+  names:
+    1: animal          # <- add at least the classes you route
     2: person
     # 2: car
     # 7: truck
@@ -85,10 +86,15 @@ specialists:
   #     address: "mask-classifier:50061"
   #     kind: "mask"
   #     timeout_sec: 1.5
-  - for_class: "person"
+  # - for_class: "person"
+  #   grpc:
+  #     address: "anomalies-classifier:50062"
+  #     kind: "mask"
+  #     timeout_sec: 5
+  - for_class: "animal"
     grpc:
       address: "anomalies-classifier:50062"
-      kind: "mask"
+      kind: "anomalies"
       timeout_sec: 5
 
   # - for_class: "bear"

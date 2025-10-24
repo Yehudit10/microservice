@@ -114,8 +114,10 @@ services:
     environment:
       - PORT=50063
       - MODEL_NAME=md_v5a.0.0.pt
+      - CONF_THRESH=0.25
       - DEVICE=cpu
     volumes:
+      - ./agguard/specialists/megadetector_service:/app/agguard/specialists/megadetector_service
       - ./weights:/app/weights:ro
     expose:
       - "50063"
