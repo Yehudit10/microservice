@@ -1,0 +1,62 @@
+# ---- Python cache / build artefacts ----
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.conda/
+*.conda
+*.ipynb_checkpoints
+
+# PyInstaller / py2exe artefacts
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+
+# Logs
+*.log
+
+# IDE / editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter notebooks (if you create some later)
+.ipynb_checkpoints/
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+
+# Model weights
+weights/*.pt
+weights/*.onnx
+
