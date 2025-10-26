@@ -8,7 +8,7 @@ import cv2, numpy as np
 from .models import Rule, Incident, Box
 from agguard.adapters.db.port import PersistencePort, IncidentOpenData
 from agguard.media.hls_recorder import HlsRecorder, HlsConfig
-
+from agguard.media.mp4_recorder import Mp4Recorder
 @dataclass
 class IncidentEvent:
     opened_incident_id: str | None = None
@@ -117,17 +117,22 @@ class IncidentAggregator:
         best = None
         for p in preds or []:
             try:
-                if _iou(track_box, p.box) >= self.assoc_iou:
+                p_box = getattr(p, "box", (p.x1, p.y1, p.x2, p.y2))
+                if _iou(track_box, p_box) >= self.assoc_iou:
+                    print(p.confidence)
                     c = float(p.confidence)
-                    if best is None or c > best[1]:
-                        best = (str(p.label).lower(), c)
-            except Exception:
-                continue
+                    if best is None or c > best:
+                        best = c#(str(p.label).lower(), c)
+
+
+            except Exception as e:
+                print("error", e)
         if rule.attr_value is None:
             return True
-        want = str(rule.attr_value).lower()
+        # want = str(rule.attr_value).lower()
         minc = getattr(rule, "min_conf", None)
-        return bool(best and best[0] == want and (minc is None or best[1] >= float(minc)))
+        # bool(best and best[0] == want
+        return  best is not None and (minc is None or best >= float(minc))
 
     def _open_incident(self, st: _EventState, rule: Rule, ts_sec: float, frame_idx: int, frame_bgr) -> None:
         import uuid
@@ -151,6 +156,7 @@ class IncidentAggregator:
         st.total_frames = 0
 
         if self.s3 and self.video_bucket:
+            # --- Live HLS recorder ---
             st._hls = HlsRecorder(
                 s3=self.s3, bucket=self.video_bucket,
                 prefix=self._hls_prefix(inc), cfg=self._hls_cfg,
@@ -158,6 +164,15 @@ class IncidentAggregator:
             H, W = frame_bgr.shape[:2]
             st._hls.start((H, W))
             st._hls.write_bgr(self._render_frame_with_boxes(frame_bgr, st.detections))
+
+            # --- MP4 recorder (for final video only) ---
+            st._mp4 = Mp4Recorder(
+                s3=self.s3, bucket=self.video_bucket,
+                prefix=self._hls_prefix(inc), cfg=self._hls_cfg,
+            )
+            st._mp4.start((H, W))
+            st._mp4.write_bgr(self._render_frame_with_boxes(frame_bgr, st.detections))
+
 
         if self.store:
             self.store.open_incident(
@@ -206,7 +221,8 @@ class IncidentAggregator:
         poster_file_id = None
         if self.s3 and self.video_bucket and hasattr(st, "_hls") and st._hls:
             try:
-                mp4_key = st._hls.finalize_to_mp4()
+                mp4_key = st._mp4.finalize() if hasattr(st, "_mp4") and st._mp4 else None
+                st._hls.cleanup_local()
                 if self.store and hasattr(self.store, "_files_upsert_minimal") and hasattr(self.store, "_files_get_id"):
                     self.store._files_upsert_minimal(self.video_bucket, mp4_key, {"incident_id": inc.incident_id})
                     poster_file_id = self.store._files_get_id(self.video_bucket, mp4_key)
@@ -230,9 +246,9 @@ class IncidentAggregator:
         evt = IncidentEvent()
 
         for rule in self.rules:
-            candidate_tracks = [t for t in tracks if self._class_match(t.cls, rule)]
+            candidate_tracks = [t for t in tracks]# if self._class_match(t.cls, rule)]
             preds = by_cls.get(rule.target_cls, []) if rule.target_cls else []
-
+            
             evidence = False
             det_event: List[Dict[str, Any]] = []
             for t in candidate_tracks:
@@ -257,9 +273,13 @@ class IncidentAggregator:
 
             st = self._states.setdefault(self._key(rule), _EventState())
 
-            if st.open_incident is not None and hasattr(st, "_hls") and st._hls:
+            if st.open_incident is not None:
                 rendered = self._render_frame_with_boxes(frame_bgr, st.detections)
-                st._hls.write_bgr(rendered)
+                if hasattr(st, "_hls") and st._hls:
+                    st._hls.write_bgr(rendered)  # continuous live feed
+                if hasattr(st, "_mp4") and st._mp4:
+                    st._mp4.write_bgr(rendered)  # only called when new frames arrive
+
                 st.total_tracks += len(st.detections)
                 st.total_frames += 1
 

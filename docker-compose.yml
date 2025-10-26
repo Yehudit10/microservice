@@ -1,13 +1,38 @@
 version: "3.9"
 
 services:
-  security:
+  # security:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.security
+  #   image: security-microservice
+  #   environment:
+  #     - PYTHONPATH=/app
+  #   volumes:
+  #     - ./agguard/app:/app/agguard/app
+  #     - ./agguard/core:/app/agguard/core
+  #     - ./agguard/specialists:/app/agguard/specialists
+  #     - ./agguard/pipeline:/app/agguard/pipeline
+  #     - ./agguard/adapters:/app/agguard/adapters
+  #     - ./agguard/media:/app/agguard/media
+  #     - ./agguard/pipeline:/app/agguard/pipeline
+  #     - ./tools:/app/tools
+  #     - ./configs:/app/configs
+  #   ports:
+  #     - "50052:50051"
+    
+  flink-jobmanager:
     build:
       context: .
-      dockerfile: Dockerfile.security
-    image: security-microservice
+      dockerfile: Dockerfile.flink
+    image: agguard-flink:latest
+    container_name: flink-jobmanager
+    command: jobmanager
     environment:
-      - PYTHONPATH=/app
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+      - KAFKA_BROKERS=kafka:9092
+      - IN_TOPIC=dev-camera-security
+      - OUT_TOPIC=incidents.events
     volumes:
       - ./agguard/app:/app/agguard/app
       - ./agguard/core:/app/agguard/core
@@ -17,19 +42,44 @@ services:
       - ./agguard/media:/app/agguard/media
       - ./agguard/pipeline:/app/agguard/pipeline
       - ./tools:/app/tools
+      - ./configs:/app/configs
     ports:
-      - "50052:50051"
+      - "8081:8081"
 
-  client:
-    image: security-microservice
-    depends_on: [security]
-    working_dir: /app
+  flink-taskmanager:
+    image: agguard-flink:latest
+    container_name: flink-taskmanager
+    command: taskmanager -D taskmanager.numberOfTaskSlots=4
     environment:
-      - PYTHONPATH=/app
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+      - KAFKA_BROKERS=kafka:9092
+      - IN_TOPIC=dev-camera-security
+      - OUT_TOPIC=incidents.events
+      - taskmanager.numberOfTaskSlots=4
     volumes:
-      - "C:/output_frames4/dev_a:/data/frames/dev_a:ro"
-      - "C:/output_frames4/dev_b:/data/frames/dev_b:ro"
-    command: python tools/grpc_client.py
+      - ./agguard/app:/app/agguard/app
+      - ./agguard/core:/app/agguard/core
+      - ./agguard/specialists:/app/agguard/specialists
+      - ./agguard/pipeline:/app/agguard/pipeline
+      - ./agguard/adapters:/app/agguard/adapters
+      - ./agguard/media:/app/agguard/media
+      - ./agguard/pipeline:/app/agguard/pipeline
+      - ./tools:/app/tools
+      - ./configs:/app/configs
+    depends_on:
+      - flink-jobmanager
+
+
+  # client:
+  #   image: security-microservice
+  #   # depends_on: [security]
+  #   working_dir: /app
+  #   environment:
+  #     - PYTHONPATH=/app
+  #   volumes:
+  #     - "C:/output_frames4/dev_a:/data/frames/dev_a:ro"
+  #     - "C:/output_frames4/dev_b:/data/frames/dev_b:ro"
+  #   command: python tools/grpc_client.py
 
   alertmanager:
     image: prom/alertmanager:v0.27.0
@@ -110,11 +160,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.mega-detector
-    image: agguard-mega-detector:latest
+    image: mega-detector:latest
     environment:
       - PORT=50063
-      - MODEL_NAME=md_v5a.0.0.pt
-      - CONF_THRESH=0.25
+      - MODEL_NAME=MDV5A 
+      - CONF_THRESH=0.2
       - DEVICE=cpu
     volumes:
       - ./agguard/specialists/megadetector_service:/app/agguard/specialists/megadetector_service
@@ -122,6 +172,22 @@ services:
     expose:
       - "50063"
     container_name: mega-detector
+  
+    # animal-classifier:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.animal-classifier
+    # image: agguard-animal-classifier:latest
+    # environment:
+    #   - PORT=50064
+    #   - MODEL_PATH=/app/weights/yolov8n-cls.pt
+    #   - DEVICE=cpu
+    # volumes:
+    #   - ./weights:/app/weights:ro
+    #   - ./agguard/specialists/animal_service/server:/app/agguard/specialists/animal_service/server
+    # expose:
+    #   - "50064"
+
 
 networks:
   default:

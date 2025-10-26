@@ -276,12 +276,12 @@ class BoxMOTWrapper:
         boxes = np.array([d[2] for d in dets], dtype=float)
         confs = np.array([d[1] for d in dets], dtype=float)[:, None]
         # map your class names to ints as needed; or 0 for single-class
-        clss  = np.zeros((len(dets), 1), dtype=float)
+        clss  = np.zeros((len(dets), 1), dtype=float)#[[d[0]] for d in dets]#
         detections = np.concatenate([boxes, confs, clss], axis=1)
         # returns Mx(x1,y1,x2,y2,id,conf,cls,ind)
         tracks = self.trk.update(detections, frame)
         return [
-            Track(track_id=int(t[4]), cls=str(int(t[6])), conf=float(t[5]),
+            Track(track_id=int(t[4]), cls=str((t[6])), conf=float(t[5]),
                   bbox=(int(t[0]), int(t[1]), int(t[2]), int(t[3])))
             for t in tracks
         ]

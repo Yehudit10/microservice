@@ -95,7 +95,7 @@ specialists:
     grpc:
       address: "anomalies-classifier:50062"
       kind: "anomalies"
-      timeout_sec: 5
+      timeout_sec: 6
 
   # - for_class: "bear"
   #   grpc:
@@ -123,19 +123,7 @@ specialists:
 
 
   
-kafka:
-  # everything here is passed directly to confluent_kafka.Consumer(...)
-  bootstrap.servers: "localhost:9094"
-  group.id: "agguard-security"
-  enable.auto.commit: true
-  auto.offset.reset: "latest"
-  # SASL example (optional):
-  # security.protocol: "SASL_PLAINTEXT"
-  # sasl.mechanism: "SCRAM-SHA-256"
-    # sasl.username: "user"
-    # sasl.password: "pass"
 
-  topic: "imagery.frames"   # <-- only this is read by us (not a Consumer property)
 
 minio:
   endpoint: "localhost:9001"

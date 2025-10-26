@@ -86,16 +86,16 @@ class ImageIngestorServicer(ingest_pb2_grpc.ImageIngestorServicer):
 
         # Rules (same as your run.py example)
         rules = [
-            Rule(
-                name="person.mask",
-                target_cls="person",
-                target_cls_id=0,
-                attr_value="mask",
-                min_conf=0.5,
-                severity=4,
-                min_consec=2,
-                cooldown=9,
-            ),
+            # Rule(
+            #     name="person.mask",
+            #     target_cls="person",
+            #     target_cls_id=0,
+            #     attr_value="mask",
+            #     min_conf=0.5,
+            #     severity=4,
+            #     min_consec=2,
+            #     cooldown=9,
+            # ),
     #             Rule(  # shooting
     #     name="person.shooting",
     #     target_cls="person",
@@ -118,7 +118,7 @@ class ImageIngestorServicer(ingest_pb2_grpc.ImageIngestorServicer):
     Rule(  # climbing a fence
         name="climbing_fence",
         target_cls="animal",
-        target_cls_id=1,
+        target_cls_id= 1,
         attr_value="object climbing a fence",
         severity=4,
         min_conf=0.5,     # tune

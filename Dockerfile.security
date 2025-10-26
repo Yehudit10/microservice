@@ -51,7 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # -------- Python deps --------
-# Your requirements.txt should have: onnxruntime, opencv-python-headless, numpy, pyyaml, grpcio, grpcio-tools, protobuf, aiohttp, etc.
+
 COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --upgrade pip && \

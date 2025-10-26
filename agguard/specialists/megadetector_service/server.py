@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MegaDetector gRPC microservice — YOLOv5-based lightweight version.
+MegaDetector gRPC microservice — using the **official Microsoft MDv5A model**.
+
+✅ Identical inference pipeline to Colab:
+   from megadetector.detection import run_detector
+   model = run_detector.load_detector("MDV5A")
+
 Compatible with AgGuard pipeline (gRPC interface identical to other classifiers).
 """
 
@@ -10,63 +15,71 @@ import os
 import io
 import time
 import grpc
+import numpy as np
 from concurrent import futures
 from PIL import Image
-import numpy as np
-import torch
 
+# MegaDetector official loader
+from megadetector.detection import run_detector
+
+# Proto imports
 from agguard.proto import mega_detector_pb2 as pb2
 from agguard.proto import mega_detector_pb2_grpc as pb2_grpc
 
 
+# ─────────────────────────────────────────────
+# MegaDetector wrapper (official)
+# ─────────────────────────────────────────────
 class SimpleMegaDetector:
-    """
-    Lightweight MegaDetector wrapper using YOLOv5 architecture.
-    Loads the official md_v5a/v6a weights and returns detections identical to MegaDetector.
-    """
+    """Wrapper around the official MegaDetector (v5A or v6A)."""
 
-    def __init__(self, model_path: str = "/app/weights/md_v5a.0.0.pt", conf: float = 0.25):
-        self.model_path = model_path
-        self.conf = conf
-        print(f"[MegaDetector] Loading weights from {model_path} ...")
+    CATEGORY_MAP = {"1": "animal", "2": "person", "3": "vehicle"}
+
+    def __init__(self, model_name: str = "MDV5A", conf: float = 0.2):
+        print(f"[MegaDetector] 🔹 Loading {model_name} ...")
         t0 = time.time()
 
-        # Load YOLOv5 model from ultralytics repo
-        self.model = torch.hub.load("ultralytics/yolov5", "custom", path=self.model_path)
-        self.model.conf = self.conf
-        print(f"[MegaDetector] ✅ Model ready (load time {time.time() - t0:.1f}s)")
+        # Load model (downloads weights automatically if needed)
+        self.model = run_detector.load_detector(model_name)
+        self.conf = conf
 
-    def detect(self, img: np.ndarray):
-        """Run inference on a numpy or PIL image and return list of detections."""
-        # If PIL image, convert to numpy
-        if isinstance(img, Image.Image):
-            img = np.array(img)
+        print(f"[MegaDetector] ✅ Model loaded in {time.time() - t0:.1f}s")
 
-        results = self.model(img)
-        df = results.pandas().xyxy[0]  # xmin, ymin, xmax, ymax, conf, cls, name
+    def detect(self, img: Image.Image) -> list[dict]:
+        """Run official MD inference on a PIL image."""
+        if not isinstance(img, Image.Image):
+            raise TypeError("Input must be a PIL.Image.Image")
 
+        # Convert to numpy array
+        image_np = np.array(img)
+
+        # Run inference
+        result = self.model.generate_detections_one_image(image_np)
+
+        detections_raw = result.get("detections", [])
         detections = []
-        for _, row in df.iterrows():
-            detections.append(
-                {
-                    "category": str(row["name"]),
-                    "conf": float(row["confidence"]),
-                    "bbox": [float(row["xmin"]), float(row["ymin"]),
-                             float(row["xmax"] - row["xmin"]), float(row["ymax"] - row["ymin"])]
-                }
-            )
+        for d in detections_raw:
+            if d.get("conf", 0) < self.conf:
+                continue
+            bbox = d["bbox"]  # normalized [x, y, w, h]
+            detections.append({
+                "category": self.CATEGORY_MAP.get(str(d["category"]), str(d["category"])),
+                "conf": float(d["conf"]),
+                "bbox": bbox
+            })
         return detections
 
 
+# ─────────────────────────────────────────────
+# gRPC Servicer
+# ─────────────────────────────────────────────
 class MegaDetectorServicer(pb2_grpc.MegaDetectorServicer):
-    """gRPC servicer for MegaDetector microservice."""
+    """gRPC servicer wrapping the official MegaDetector."""
 
     def __init__(self):
-        model_name = os.getenv("MODEL_NAME", "md_v5a.0.0.pt")
-        model_path = f"/app/weights/{model_name}"
-        conf_thresh = float(os.getenv("CONF_THRESH", 0.25))
-
-        self.detector = SimpleMegaDetector(model_path=model_path, conf=conf_thresh)
+        model_name = os.getenv("MODEL_NAME", "MDV5A")
+        conf_thresh = float(os.getenv("CONF_THRESH", "0.2"))
+        self.detector = SimpleMegaDetector(model_name=model_name, conf=conf_thresh)
 
     def Detect(self, request, context):
         """Handle gRPC detection requests."""
@@ -96,24 +109,31 @@ class MegaDetectorServicer(pb2_grpc.MegaDetectorServicer):
             return pb2.DetectionResponse()
         dt = time.time() - t0
 
+        # Convert normalized → absolute coords
+        w, h = img.size
         detections = []
         for det in detections_raw:
-            bbox = det["bbox"]  # [x, y, w, h]
+            x, y, bw, bh = det["bbox"]
+            x1 = x * w
+            y1 = y * h
+            x2 = (x + bw) * w
+            y2 = (y + bh) * h
             detections.append(
                 pb2.Detection(
                     cls=det["category"],
                     conf=det["conf"],
-                    x1=float(bbox[0]),
-                    y1=float(bbox[1]),
-                    x2=float(bbox[0] + bbox[2]),
-                    y2=float(bbox[1] + bbox[3]),
+                    x1=x1, y1=y1, x2=x2, y2=y2,
                 )
             )
 
         print(f"[MegaDetector] {len(detections)} detections in {dt:.2f}s")
+        print(detections)
         return pb2.DetectionResponse(detections=detections, inference_time=dt)
 
 
+# ─────────────────────────────────────────────
+# Server bootstrap
+# ─────────────────────────────────────────────
 def serve():
     """Start gRPC server."""
     port = int(os.getenv("PORT", "50063"))

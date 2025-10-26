@@ -1,0 +1,93 @@
+############################
+# Animal Classifier — YOLO-CLS gRPC microservice
+# Auto-builds gRPC stubs (reusing mask-classifier.proto)
+############################
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    OPENCV_OPENCL_RUNTIME=disabled
+
+# ────────────────────────────────
+# System libs for OpenCV / PyTorch
+# ────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libglib2.0-0 \
+      libgl1 \
+      libstdc++6 \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ────────────────────────────────
+# Python dependencies
+# ────────────────────────────────
+# Your requirements.txt should include:
+# torch, ultralytics, opencv-python-headless, pillow,
+# grpcio, grpcio-tools, protobuf, numpy, etc.
+COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip && \
+    python -m pip install --no-cache-dir -r requirements.txt
+
+# ────────────────────────────────
+# App source code
+# ────────────────────────────────
+COPY . .
+
+# ────────────────────────────────
+# Weights (YOLO-CLS)
+# ────────────────────────────────
+RUN mkdir -p /app/weights
+# Optional: copy pretrained YOLO-CLS weights if stored locally
+COPY weights/yolov8n-cls.pt /app/weights/yolov8n-cls.pt
+RUN test -f /app/weights/yolov8n-cls.pt && echo "✅ YOLO-CLS weights present" || echo "ℹ️ YOLO-CLS weights will be mounted at runtime"
+
+# ────────────────────────────────
+# gRPC stub generation
+# ────────────────────────────────
+RUN mkdir -p agguard/proto && touch agguard/proto/__init__.py
+
+# Generate stubs from mask-classifier.proto (shared proto)
+RUN python -m grpc_tools.protoc \
+      -I agguard/proto \
+      --python_out=agguard/proto \
+      --grpc_python_out=agguard/proto \
+      mask_classifier.proto
+
+# Patch imports to be package-relative (so "from . import X_pb2")
+RUN python - <<'PY'
+from pathlib import Path
+import re
+p = Path("agguard/proto/mask_classifier_pb2_grpc.py")
+if p.exists():
+    s = p.read_text(encoding="utf-8")
+    s2 = re.sub(r'(?m)^import (\w+_pb2)\b', r'from . import \1', s)
+    if s2 != s:
+        p.write_text(s2, encoding="utf-8")
+        print("patched", p)
+    else:
+        print("no patch needed", p)
+else:
+    print("mask_classifier_pb2_grpc.py not found; proto may be missing")
+PY
+
+# ────────────────────────────────
+# Service defaults
+# ────────────────────────────────
+ENV PORT=50064 \
+    MODEL_PATH=/app/weights/yolov8n-cls.pt \
+    DEVICE=cpu \
+    MODEL_NAME=yolo-cls
+
+EXPOSE 50064
+
+# ────────────────────────────────
+# Entrypoint
+# ────────────────────────────────
+CMD ["python", "-m", "agguard.specialists.animal_classifier_service"]

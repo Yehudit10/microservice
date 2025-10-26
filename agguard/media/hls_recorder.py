@@ -184,98 +184,98 @@ class HlsRecorder:
         if not self._first_frame_evt.is_set():
             self._first_frame_evt.set()
 
-    def finalize_to_mp4(self) -> str:
-        """Stop feeder + ffmpeg + uploader; remux playlist to MP4; upload + cleanup."""
-        # ─── Stop feeder + ffmpeg cleanly ───────────────────────────────
-        self._feeder_stop.set()
-        if self._feeder_thread:
-            try:
-                self._feeder_thread.join(timeout=5)
-            except Exception:
-                pass
-            self._feeder_thread = None
+    # def finalize_to_mp4(self) -> str:
+    #     """Stop feeder + ffmpeg + uploader; remux playlist to MP4; upload + cleanup."""
+    #     # ─── Stop feeder + ffmpeg cleanly ───────────────────────────────
+    #     self._feeder_stop.set()
+    #     if self._feeder_thread:
+    #         try:
+    #             self._feeder_thread.join(timeout=5)
+    #         except Exception:
+    #             pass
+    #         self._feeder_thread = None
 
-        if self._proc:
-            try:
-                if self._proc.stdin:
-                    try:
-                        self._proc.stdin.close()
-                    except Exception:
-                        pass
-            finally:
-                try:
-                    self._proc.wait(timeout=15)
-                except Exception:
-                    pass
-            self._proc = None
+    #     if self._proc:
+    #         try:
+    #             if self._proc.stdin:
+    #                 try:
+    #                     self._proc.stdin.close()
+    #                 except Exception:
+    #                     pass
+    #         finally:
+    #             try:
+    #                 self._proc.wait(timeout=15)
+    #             except Exception:
+    #                 pass
+    #         self._proc = None
 
-        # ─── Stop uploader ─────────────────────────────────────────────
-        self._stop_evt.set()
-        if self._sync_thread:
-            try:
-                self._sync_thread.join(timeout=10)
-            except Exception:
-                pass
-            self._sync_thread = None
+    #     # ─── Stop uploader ─────────────────────────────────────────────
+    #     self._stop_evt.set()
+    #     if self._sync_thread:
+    #         try:
+    #             self._sync_thread.join(timeout=10)
+    #         except Exception:
+    #             pass
+    #         self._sync_thread = None
 
-        tmp = pathlib.Path(self._tmpdir or ".")
-        out_mp4 = tmp / "final.mp4"
+    #     tmp = pathlib.Path(self._tmpdir or ".")
+    #     out_mp4 = tmp / "final.mp4"
 
-        # ─── Collect all local segments ────────────────────────────────
-        segs = sorted([p for p in tmp.iterdir() if p.suffix.lower() in (".ts", ".m4s")])
-        if not segs:
-            self._cleanup_local()
-            return f"{self.prefix}/final.mp4"
+    #     # ─── Collect all local segments ────────────────────────────────
+    #     segs = sorted([p for p in tmp.iterdir() if p.suffix.lower() in (".ts", ".m4s")])
+    #     if not segs:
+    #         self._cleanup_local()
+    #         return f"{self.prefix}/final.mp4"
 
-        # ─── Build concat list for ffmpeg ──────────────────────────────
-        list_txt = tmp / "list.txt"
-        with list_txt.open("w", encoding="utf-8") as f:
-            for p in segs:
-                f.write(f"file '{p.name}'\n")
+    #     # ─── Build concat list for ffmpeg ──────────────────────────────
+    #     list_txt = tmp / "list.txt"
+    #     with list_txt.open("w", encoding="utf-8") as f:
+    #         for p in segs:
+    #             f.write(f"file '{p.name}'\n")
 
-        # ─── Convert to MP4 and remove duplicate frames ────────────────
-        try:
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-loglevel", "warning",
-                    "-f", "concat",
-                    "-safe", "0",
-                    "-i", str(list_txt),
-                    # Apply duplicate-frame removal
-                    "-vf", "mpdecimate=hi=64*15:lo=64*5:frac=0.1,setpts=N/FRAME_RATE/TB",
-                    "-c:v", "libx264",
-                    "-preset", "veryfast",
-                    "-crf", "23",
-                    "-c:a", "aac",
-                    "-b:a", "128k",
-                    "-movflags", "+faststart",
-                    str(out_mp4),
-                ],
-                check=True,
-                cwd=str(tmp),
-            )
-        except subprocess.CalledProcessError as e:
-            print(f"[HlsRecorder] finalize_to_mp4 failed: {e}")
-            self._cleanup_local()
-            return f"{self.prefix}/final.mp4"
+    #     # ─── Convert to MP4 and remove duplicate frames ────────────────
+    #     try:
+    #         subprocess.run(
+    #             [
+    #                 "ffmpeg",
+    #                 "-y",
+    #                 "-loglevel", "warning",
+    #                 "-f", "concat",
+    #                 "-safe", "0",
+    #                 "-i", str(list_txt),
+    #                 # Apply duplicate-frame removal
+    #                 "-vf", "mpdecimate=hi=64*15:lo=64*5:frac=0.1,setpts=N/FRAME_RATE/TB",
+    #                 "-c:v", "libx264",
+    #                 "-preset", "veryfast",
+    #                 "-crf", "23",
+    #                 "-c:a", "aac",
+    #                 "-b:a", "128k",
+    #                 "-movflags", "+faststart",
+    #                 str(out_mp4),
+    #             ],
+    #             check=True,
+    #             cwd=str(tmp),
+    #         )
+    #     except subprocess.CalledProcessError as e:
+    #         print(f"[HlsRecorder] finalize_to_mp4 failed: {e}")
+    #         self._cleanup_local()
+    #         return f"{self.prefix}/final.mp4"
 
-        # ─── Upload and cleanup ────────────────────────────────────────
-        mp4_key = f"{self.prefix}/final.mp4"
-        try:
-            self.s3.put_file(self.bucket, mp4_key, str(out_mp4), content_type=_CT[".mp4"])
-            for k in list(self._uploaded_keys):
-                if not k.endswith("/final.mp4"):
-                    try:
-                        self.s3.delete_object(self.bucket, k)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+    #     # ─── Upload and cleanup ────────────────────────────────────────
+    #     mp4_key = f"{self.prefix}/final.mp4"
+    #     try:
+    #         self.s3.put_file(self.bucket, mp4_key, str(out_mp4), content_type=_CT[".mp4"])
+    #         for k in list(self._uploaded_keys):
+    #             if not k.endswith("/final.mp4"):
+    #                 try:
+    #                     self.s3.delete_object(self.bucket, k)
+    #                 except Exception:
+    #                     pass
+    #     except Exception:
+    #         pass
 
-        self._cleanup_local()
-        return mp4_key
+    #     self._cleanup_local()
+    #     return mp4_key
 
 
 

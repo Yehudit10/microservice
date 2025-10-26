@@ -1,0 +1,128 @@
+############################
+# Stage 1: Export YOLO -> ONNX
+############################
+FROM python:3.12-slim AS exporter
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates libgl1 libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
+
+# --- Export YOLOv8n to ONNX ---
+RUN python -m pip install --upgrade pip && \
+    pip install --no-cache-dir \
+        ultralytics==8.3.0 \
+        torch==2.2.2+cpu \
+        torchvision==0.17.2+cpu \
+        onnx \
+        --extra-index-url https://download.pytorch.org/whl/cpu
+
+WORKDIR /w
+RUN python - <<'PY'
+from ultralytics import YOLO
+m = YOLO("yolov8n.pt")  # auto-downloads if needed
+out_path = m.export(format="onnx", opset=12, simplify=False, dynamic=False)
+print("✅ Exported:", out_path)
+PY
+
+
+############################
+# Stage 2: Flink + PyFlink + YOLO runtime
+############################
+FROM flink:1.19.3-scala_2.12-java11
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    OPENCV_OPENCL_RUNTIME=disabled
+
+USER root
+
+# --- System libraries ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-venv python3-pip \
+      build-essential \
+      libglib2.0-0 libgl1 libstdc++6 libgomp1 \
+      ca-certificates curl wget ffmpeg && \
+    rm -rf /var/lib/apt/lists/*
+
+# --- Kafka connectors (for Flink 1.19) ---
+RUN mkdir -p /opt/flink/lib && \
+    wget --tries=5 --retry-connrefused --waitretry=5 \
+      https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.7.0/kafka-clients-3.7.0.jar \
+      -O /opt/flink/lib/kafka-clients-3.7.0.jar && \
+    wget --tries=5 --retry-connrefused --waitretry=5 \
+      https://repo1.maven.org/maven2/org/apache/flink/flink-connector-kafka/3.2.0-1.19/flink-connector-kafka-3.2.0-1.19.jar \
+      -O /opt/flink/lib/flink-connector-kafka-3.2.0-1.19.jar
+
+# --- Python virtual environment ---
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+ENV PYFLINK_PYTHON=/opt/venv/bin/python
+ENV PYFLINK_CLIENT_EXECUTABLE=/opt/venv/bin/python3
+ENV PYTHONPATH="/opt/venv/lib/python3.10/site-packages:${PYTHONPATH}"
+
+# --- Install Python dependencies ---
+WORKDIR /opt/app
+COPY requirements.txt .  
+RUN /opt/venv/bin/pip install --no-cache-dir --upgrade pip && \
+    /opt/venv/bin/pip install --no-cache-dir -r requirements.txt && \
+    /opt/venv/bin/pip install --no-cache-dir boxmot&& \
+    /opt/venv/bin/pip install --no-cache-dir \
+        apache-flink==1.19.0 \
+        numpy boto3 pyyaml opencv-python-headless \
+        grpcio grpcio-tools \
+        requests Pillow minio kafka-python protobuf google-cloud-storage \
+        torch torchvision onnx ultralytics==8.3.0
+
+# --- Copy source code ---
+COPY . .
+
+# --- Copy ONNX weights from exporter stage ---
+RUN mkdir -p /opt/app/weights
+COPY --from=exporter /w/yolov8n.onnx /opt/app/weights/yolov8n.onnx
+COPY weights/mask_yolov8.onnx /opt/app/weights/mask_yolov8.onnx
+
+# --- Sanity checks ---
+RUN test -f /opt/app/weights/yolov8n.onnx && echo "✅ YOLOv8 detector ONNX present"
+RUN test -f /opt/app/weights/mask_yolov8.onnx && echo "✅ Mask classifier ONNX present"
+
+# --- Compile gRPC stubs ---
+RUN mkdir -p agguard/proto && touch agguard/proto/__init__.py
+RUN /opt/venv/bin/python -m grpc_tools.protoc \
+      -I agguard/proto \
+      --python_out=agguard/proto \
+      --grpc_python_out=agguard/proto \
+      agguard/proto/ingest.proto \
+      agguard/proto/mask_classifier.proto \
+      agguard/proto/mega_detector.proto
+
+# --- Fix imports in generated stubs ---
+RUN /opt/venv/bin/python - <<'PY'
+from pathlib import Path
+import re
+for p in Path("agguard/proto").glob("*_pb2_grpc.py"):
+    s = p.read_text(encoding="utf-8")
+    s2 = re.sub(r'(?m)^import (\w+_pb2)\b', r'from . import \1', s)
+    if s2 != s:
+        p.write_text(s2, encoding="utf-8")
+        print("✅ patched:", p)
+PY
+
+# --- Default environment variables ---
+ENV KAFKA_BROKERS=kafka:9092 \
+    IN_TOPIC=dev-camera-security \
+    OUT_TOPIC=incidents.events \
+    PIPELINE_CFG=/opt/app/configs/default.yaml \
+    PYTHONPATH=/opt/app \
+    GRPC_HOST=security:50052
+
+EXPOSE 50051
+
+USER flink
+WORKDIR /opt/app
+
+# --- Default command: run the Flink job ---
+CMD ["flink", "run", "-py", "agguard/pipeline/flink_job.py"]

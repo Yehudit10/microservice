@@ -1,17 +1,18 @@
 from __future__ import annotations
 import time, grpc, cv2
 import numpy as np
+from agguard.core.types import Detection
 from agguard.proto import mega_detector_pb2 as pb2
 from agguard.proto import mega_detector_pb2_grpc as pb2_grpc
 
-class Detection:
-    def __init__(self, cls: str, conf: float, bbox: tuple[int, int, int, int]):
-        self.cls, self.conf, self.bbox = cls, conf, bbox
+# class Detection:
+#     def __init__(self, cls: str, conf: float, bbox: tuple[int, int, int, int]):
+#         self.cls, self.conf, self.bbox = cls, conf, bbox
 
 class MegaDetectorClient:
     def __init__(self, cfg: dict):
         self.host = cfg.get("host", "mega-detector:50063")
-        self.timeout = float(cfg.get("timeout", 5.0))
+        self.timeout = float(cfg.get("timeout", 20.0))
         self.channel = grpc.insecure_channel(self.host)
         self.stub = pb2_grpc.MegaDetectorStub(self.channel)
         print(f"[MegaDetectorClient] Connected to {self.host}")
