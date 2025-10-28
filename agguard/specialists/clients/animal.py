@@ -3,20 +3,22 @@ import logging
 from typing import List, Tuple, Optional
 import cv2, numpy as np, grpc
 
-from agguard.proto import animal_classifier_pb2 as pb
-from agguard.proto import animal_classifier_pb2_grpc as pbrpc
+from agguard.proto import mask_classifier_pb2 as pb
+from agguard.proto import mask_classifier_pb2_grpc as pbrpc
 
 log = logging.getLogger(__name__)
 Box = Tuple[int, int, int, int]
 
-StubClass = getattr(pbrpc, "AnimalClassifierStub", None)
+StubClass = getattr(pbrpc, "ClassifierServiceStub", getattr(pbrpc, "ClassifierStub", None))
 if StubClass is None:
-    raise ImportError("animal_classifier_pb2_grpc missing AnimalClassifierStub")
+    raise ImportError("mask_classifier_pb2_grpc missing ClassifierServiceStub/ClassifierStub")
+
+
 
 
 class GrpcAnimalClassifierClient:
     def __init__(self, address: str, model_name: str = "yolo-cls",
-                 timeout_sec: float = 2.0, jpeg_quality: int = 85):
+                 timeout_sec: float = 12.0, jpeg_quality: int = 85):
         self.address = address
         self.model_name = model_name
         self.timeout = float(timeout_sec)

@@ -58,42 +58,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --no-cache-dir -r requirements.txt
 
 # -------- App sources --------
-COPY . .
+COPY agguard ./agguard
 
-# -------- Weights --------
-RUN mkdir -p /app/weights
-COPY --from=exporter /w/yolov8n.onnx /app/weights/yolov8n.onnx
-COPY weights/mask_yolov8.onnx /app/weights/mask_yolov8.onnx
-
-# Optional build-time sanity checks
-RUN test -f /app/weights/yolov8n.onnx     && echo "✅ detector ONNX present"
-RUN test -f /app/weights/mask_yolov8.onnx && echo "✅ mask ONNX present"
-
-# -------- gRPC stubs (proto -> agguard/proto) --------
-RUN mkdir -p agguard/proto && touch agguard/proto/__init__.py
-
-# ✅ Generate ALL stubs: ingest.proto, mask_classifier.proto, mega_detector.proto
-RUN python -m grpc_tools.protoc \
-      -I agguard/proto \
-      --python_out=agguard/proto \
-      --grpc_python_out=agguard/proto \
-      agguard/proto/ingest.proto \
-      agguard/proto/mask_classifier.proto \
-      agguard/proto/mega_detector.proto
-
-# ✅ Patch imports to be relative (import X_pb2 → from . import X_pb2)
-RUN python - <<'PY'
-from pathlib import Path
-import re
-for p in Path("agguard/proto").glob("*_pb2_grpc.py"):
-    s = p.read_text(encoding="utf-8")
-    s2 = re.sub(r'(?m)^import (\w+_pb2)\b', r'from . import \1', s)
-    if s2 != s:
-        p.write_text(s2, encoding="utf-8")
-        print("patched", p)
-    else:
-        print("no patch needed", p)
-PY
 
 # -------- Runtime config --------
 ENV AGGUARD_CFG=/app/configs/default.yaml

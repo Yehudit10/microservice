@@ -91,10 +91,15 @@ specialists:
   #     address: "anomalies-classifier:50062"
   #     kind: "mask"
   #     timeout_sec: 5
+  # - for_class: "animal"
+  #   grpc:
+  #     address: "anomalies-classifier:50062"
+  #     kind: "anomalies"
+  #     timeout_sec: 6
   - for_class: "animal"
     grpc:
-      address: "anomalies-classifier:50062"
-      kind: "anomalies"
+      address: "animal-classifier:50064"
+      kind: "animal"
       timeout_sec: 6
 
   # - for_class: "bear"
@@ -134,8 +139,8 @@ minio:
 
 s3:
   # For AWS: set only region_name; credentials come from env/role by default
-  # endpoint_url: "http://127.0.0.1:9001"
-  endpoint_url: "http://host.docker.internal:9001"
+  endpoint_url: "http://minio-hot:9000"
+  # endpoint_url: "http://host.docker.internal:9001"
   region_name: "us-east-1"
   aws_access_key_id: "minioadmin"
   aws_secret_access_key: "minioadmin123"

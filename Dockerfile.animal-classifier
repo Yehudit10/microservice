@@ -38,15 +38,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # ────────────────────────────────
 # App source code
 # ────────────────────────────────
-COPY . .
+COPY agguard ./agguard
 
 # ────────────────────────────────
 # Weights (YOLO-CLS)
 # ────────────────────────────────
 RUN mkdir -p /app/weights
 # Optional: copy pretrained YOLO-CLS weights if stored locally
-COPY weights/yolov8n-cls.pt /app/weights/yolov8n-cls.pt
-RUN test -f /app/weights/yolov8n-cls.pt && echo "✅ YOLO-CLS weights present" || echo "ℹ️ YOLO-CLS weights will be mounted at runtime"
+COPY weights/yolov8m-cls.pt /app/weights/yolov8m-cls.pt
+RUN test -f /app/weights/yolov8m-cls.pt && echo "✅ YOLO-CLS weights present" || echo "ℹ️ YOLO-CLS weights will be mounted at runtime"
 
 # ────────────────────────────────
 # gRPC stub generation
@@ -81,7 +81,7 @@ PY
 # Service defaults
 # ────────────────────────────────
 ENV PORT=50064 \
-    MODEL_PATH=/app/weights/yolov8n-cls.pt \
+    MODEL_PATH=/app/weights/yolov8m-cls.pt \
     DEVICE=cpu \
     MODEL_NAME=yolo-cls
 
@@ -90,4 +90,4 @@ EXPOSE 50064
 # ────────────────────────────────
 # Entrypoint
 # ────────────────────────────────
-CMD ["python", "-m", "agguard.specialists.animal_classifier_service"]
+CMD ["python", "-m", "agguard.specialists.animal_service.server"]

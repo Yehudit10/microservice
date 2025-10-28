@@ -30,7 +30,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --no-cache-dir megadetector
 
 # -------- App sources --------
-COPY . .
+COPY agguard/specialists/megadetector_service/server.py agguard/specialists/megadetector_service/server.py
+COPY agguard/proto agguard/proto
 
 # -------- gRPC stubs (proto -> agguard/proto) --------
 RUN mkdir -p agguard/proto && touch agguard/proto/__init__.py

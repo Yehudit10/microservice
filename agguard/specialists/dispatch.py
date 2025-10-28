@@ -45,11 +45,21 @@ class ClassDispatch:
                     )
                     fn: Specialist = lambda frame, boxes, subjects=None, _c=client, _cls=cls_name: \
                         _c.classify(frame, boxes, subjects or ([_cls]))
-                else:
+                elif kind == "mask":
                     from agguard.specialists.clients.mask import GrpcMaskClassifierClient
                     client = GrpcMaskClassifierClient(
                         address=address,
                         model_name="mask",
+                        timeout_sec=timeout,
+                        jpeg_quality=jpeg_q,
+                    )
+                    fn: Specialist = lambda frame, boxes, subjects=None, _c=client: \
+                        _c.classify(frame, boxes)
+                elif kind == "animal":
+                    from agguard.specialists.clients.animal import  GrpcAnimalClassifierClient
+                    client = GrpcAnimalClassifierClient(
+                        address=address,
+                        model_name="yolo-cls",
                         timeout_sec=timeout,
                         jpeg_quality=jpeg_q,
                     )
@@ -61,6 +71,8 @@ class ClassDispatch:
                     "Registered gRPC specialist for class '%s' -> %s (%s)",
                     cls_name, address, kind
                 )
+                
+                
 
             else:
                 dotted = spec["dotted_path"]

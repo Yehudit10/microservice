@@ -31,7 +31,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --no-cache-dir -r requirements.txt
 
 # -------- App sources --------
-COPY . .
+COPY agguard/specialists/mask_service/server.py agguard/specialists/mask_service/server.py
+COPY agguard/specialists/mask_classifier.py agguard/specialists/mask_classifier.py
+COPY agguard/proto agguard/proto
 
 # -------- Weights (optional copy; you can also mount via compose) --------
 RUN mkdir -p /app/weights

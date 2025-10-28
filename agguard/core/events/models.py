@@ -9,11 +9,12 @@ class Rule:
     name: str
     target_cls: str                          # e.g. "person"
     target_cls_id: Optional[Union[str,int]] = None  # e.g. 0, "0"
-    attr_value: str = ""  # e.g. "balaclava"
+    match_classes: List[str] = field(default_factory=list)  # ← new field
     severity:  int = 3                
     min_conf: float = 0.6
     min_consec: int = 5
     cooldown: int = 12
+
 
 @dataclass
 class Incident:

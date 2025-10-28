@@ -7,14 +7,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates libgl1 libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
-# --- Export YOLOv8n to ONNX ---
-RUN python -m pip install --upgrade pip && \
-    pip install --no-cache-dir \
-        ultralytics==8.3.0 \
-        torch==2.2.2+cpu \
-        torchvision==0.17.2+cpu \
-        onnx \
-        --extra-index-url https://download.pytorch.org/whl/cpu
+# # --- Export YOLOv8n to ONNX ---
+# RUN python -m pip install --upgrade pip && \
+#     pip install --no-cache-dir \
+#         ultralytics==8.3.0 \
+#         torch==2.2.2+cpu \
+#         torchvision==0.17.2+cpu \
+#         onnx \
+#         --extra-index-url https://download.pytorch.org/whl/cpu
 
 WORKDIR /w
 RUN python - <<'PY'
@@ -78,16 +78,17 @@ RUN /opt/venv/bin/pip install --no-cache-dir --upgrade pip && \
         torch torchvision onnx ultralytics==8.3.0
 
 # --- Copy source code ---
-COPY . .
+COPY agguard ./agguard
+COPY configs ./configs
 
 # --- Copy ONNX weights from exporter stage ---
-RUN mkdir -p /opt/app/weights
-COPY --from=exporter /w/yolov8n.onnx /opt/app/weights/yolov8n.onnx
-COPY weights/mask_yolov8.onnx /opt/app/weights/mask_yolov8.onnx
+# RUN mkdir -p /opt/app/weights
+# COPY --from=exporter /w/yolov8n.onnx /opt/app/weights/yolov8n.onnx
+# COPY weights/mask_yolov8.onnx /opt/app/weights/mask_yolov8.onnx
 
-# --- Sanity checks ---
-RUN test -f /opt/app/weights/yolov8n.onnx && echo "✅ YOLOv8 detector ONNX present"
-RUN test -f /opt/app/weights/mask_yolov8.onnx && echo "✅ Mask classifier ONNX present"
+# # --- Sanity checks ---
+# RUN test -f /opt/app/weights/yolov8n.onnx && echo "✅ YOLOv8 detector ONNX present"
+# RUN test -f /opt/app/weights/mask_yolov8.onnx && echo "✅ Mask classifier ONNX present"
 
 # --- Compile gRPC stubs ---
 RUN mkdir -p agguard/proto && touch agguard/proto/__init__.py

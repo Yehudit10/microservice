@@ -19,6 +19,37 @@ from agguard.core.events.models import Rule
 
 log = logging.getLogger("flink")
 
+# ---- Force all Python logs to stdout so Flink sees them ----
+import logging, sys
+
+import sys, logging
+
+# ---- Force all Python logs to go to stdout (captured by Flink) ----
+root = logging.getLogger()
+root.setLevel(logging.DEBUG)
+
+# Remove any default handlers (Beam might pre-configure one that discards logs)
+for h in list(root.handlers):
+    root.removeHandler(h)
+
+# Create stdout handler
+stdout_handler = logging.StreamHandler(sys.stdout)
+stdout_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+))
+root.addHandler(stdout_handler)
+
+# Make sure every library logger propagates up to root
+logging.captureWarnings(True)  # also capture warnings.warn() calls
+logging.getLogger().propagate = True
+logging.getLogger("pyflink").setLevel(logging.DEBUG)
+logging.getLogger("agguard").setLevel(logging.DEBUG)
+logging.getLogger("botocore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+# Optional: sanity check line
+logging.getLogger("flink").info("[Init] Global stdout logger initialized.")
+
 
 
 # def load_frame(bucket, key):
@@ -55,16 +86,29 @@ class CameraOperator(KeyedProcessFunction):
         from agguard.core.events.models import Rule
         rules = [
             Rule(
-                name="climbing_fence",
+                name="intruding animal",
                 target_cls="animal",
                 target_cls_id=1,
-                attr_value="object climbing a fence",
-                severity=4,
-                min_conf=0.5,
+                match_classes=[ "red_fox", "grey_fox", "brown_bear", "American_black_bear", "wild_boar"],
+                severity=2,
+                min_conf=0.25,
                 min_consec=2,
                 cooldown=12,
             ),
+            # Rule(
+            #     name="climbing_fence",
+            #     target_cls="animal",
+            #     target_cls_id=1,
+            #     match_classes=["object climbing a fence"],
+            #     severity=4,
+            #     min_conf=0.5,
+            #     min_consec=2,
+            #     cooldown=12,
+            # ),
+            
             # Add other rules here if needed
+       
+
         ]
 
         # ---- Create pipeline manager ----
@@ -77,22 +121,32 @@ class CameraOperator(KeyedProcessFunction):
 
     def process_element(self, msg, ctx):
         data = json.loads(msg)
-        # frame = load_frame(data["s3_bucket"], data["s3_key"])
         frame = self.s3.fetch_image_bgr(data["s3_bucket"], data["s3_key"])
 
+        
         evt = self.pm.process(
-            camera_id=data["camera_id"],
-            ts_sec=float(data["ts_millis"]) / 1000.0,
-            frame_idx=int(data.get("frame_idx", 0)),
-            frame_bgr=frame
+        camera_id=data["camera_id"],
+        ts_sec=float(data["ts_millis"]) / 1000.0,
+        frame_idx=int(data.get("frame_idx", 0)),
+        frame_bgr=frame
         )
         if evt:
-            yield json.dumps(evt)
+            topic, payload = evt
+            payload_dict = json.loads(payload)
+            # embed topic just for routing (Kafka sink will strip it)
+            payload_dict["_topic"] = topic
+            out_json = json.dumps(payload_dict)
+            log.info(f"[CameraOperator] Emitting to topic {topic}")
+            yield out_json
+
+
+
+
 
 def main():
     bootstrap = os.getenv("KAFKA_BROKERS", "kafka:9092")
     topic_in = os.getenv("IN_TOPIC", "dev-camera-security")
-    topic_out = os.getenv("OUT_TOPIC", "incidents.events")
+    topic_out = os.getenv("OUT_TOPIC", "incidents")
 
     env = StreamExecutionEnvironment.get_execution_environment()
     env.set_parallelism(1)
@@ -107,26 +161,40 @@ def main():
         .build()
     )
 
+    from pyflink.datastream.connectors.kafka import KafkaRecordSerializationSchema
+
     sink = (
     KafkaSink.builder()
     .set_bootstrap_servers(bootstrap)
     .set_record_serializer(
         KafkaRecordSerializationSchema.builder()
-            .set_topic(topic_out)
-            .set_value_serialization_schema(SimpleStringSchema())
-            .build()
+        # topic selector reads the "_topic" field
+        .set_topic_selector(lambda record: json.loads(record)["_topic"])
+        # message value is the record itself (JSON string)
+        .set_value_serialization_schema(SimpleStringSchema())
+        .build()
     )
     .set_delivery_guarantee(DeliveryGuarantee.AT_LEAST_ONCE)
     .build()
 )
 
-    stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "CameraFrames")
-    
-    stream.key_by(lambda m: json.loads(m)["camera_id"]) \
-    .process(CameraOperator(), output_type=Types.STRING()) \
+
+
+
+
+
+
+    stream = (
+    env.from_source(source, WatermarkStrategy.no_watermarks(), "CameraFrames")
+    .key_by(lambda m: json.loads(m)["camera_id"])
+    .process(CameraOperator(), output_type=Types.STRING())
     .sink_to(sink)
+)
+
+
 
     env.execute("AgGuard Flink Pipeline")
+
 
 if __name__ == "__main__":
     main()

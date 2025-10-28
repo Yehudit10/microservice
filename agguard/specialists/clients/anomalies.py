@@ -49,4 +49,17 @@ class GrpcClipClassifierClient:
                 setattr(c, "subject", subs[i])
 
         resp = self.stub.Classify(req, timeout=self.timeout)
+        if hasattr(resp, "detections"):
+            preds = list(resp.detections)
+        elif hasattr(resp, "preds"):
+            preds = list(resp.preds)
+        elif hasattr(resp, "results"):
+            preds = list(resp.results)
+        else:
+            # fallback for unexpected response types
+            import logging
+            logging.warning(f"[GrpcClipClassifierClient] Unknown response fields: {resp}")
+            preds = []
+
+        return preds
         return resp.preds

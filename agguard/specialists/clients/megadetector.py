@@ -12,7 +12,7 @@ from agguard.proto import mega_detector_pb2_grpc as pb2_grpc
 class MegaDetectorClient:
     def __init__(self, cfg: dict):
         self.host = cfg.get("host", "mega-detector:50063")
-        self.timeout = float(cfg.get("timeout", 20.0))
+        self.timeout = float(cfg.get("timeout", 30.0))
         self.channel = grpc.insecure_channel(self.host)
         self.stub = pb2_grpc.MegaDetectorStub(self.channel)
         print(f"[MegaDetectorClient] Connected to {self.host}")

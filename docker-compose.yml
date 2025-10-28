@@ -173,20 +173,20 @@ services:
       - "50063"
     container_name: mega-detector
   
-    # animal-classifier:
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile.animal-classifier
-    # image: agguard-animal-classifier:latest
-    # environment:
-    #   - PORT=50064
-    #   - MODEL_PATH=/app/weights/yolov8n-cls.pt
-    #   - DEVICE=cpu
-    # volumes:
-    #   - ./weights:/app/weights:ro
-    #   - ./agguard/specialists/animal_service/server:/app/agguard/specialists/animal_service/server
-    # expose:
-    #   - "50064"
+  animal-classifier:
+    build:
+      context: .
+      dockerfile: Dockerfile.animal-classifier
+    image: agguard-animal-classifier:latest
+    environment:
+      - PORT=50064
+      - MODEL_PATH=/app/weights/yolov8m-cls.pt
+      - DEVICE=cpu
+    volumes:
+      - ./weights:/app/weights:ro
+      - ./agguard/specialists/animal_service/server:/app/agguard/specialists/animal_service/server
+    expose:
+      - "50064"
 
 
 networks:
